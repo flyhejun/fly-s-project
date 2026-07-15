@@ -40,6 +40,8 @@ typedef struct
     int16_t gy;
     int16_t gz;
 
+    uint32_t timestamp;
+
 } IMU_Data_t;
 /* USER CODE END PTD */
 
@@ -50,18 +52,7 @@ typedef struct
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
- typedef struct
-{
-  uint32_t period;
-  uint32_t id;
-} TaskConfig_t;
-
-TaskConfig_t startConfig =
-{
-  .period = 1000,
-  .id = 1
-};
-
+ 
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -87,6 +78,13 @@ const osThreadAttr_t LedTask_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
+
+osThreadId_t TriggleTaskHandle;
+const osThreadAttr_t TriggleTask_attributes = {
+  .name = "TriggleTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -100,12 +98,18 @@ osMessageQueueId_t imuQueueHandle;
 const osMessageQueueAttr_t imuQueue_attributes = {
   .name = "imuQueue"
 };
+/* Definitions for sensorSem */
+osSemaphoreId_t sensorSemHandle;
+const osSemaphoreAttr_t sensorSem_attributes = {
+  .name = "sensorSem"
+};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
 void sensorTask(void *argument);
 void fallTask(void *argument);
 void ledTask(void *argument);
+void triggleTask(void *argument);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -125,6 +129,10 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
   /* USER CODE END RTOS_MUTEX */
+
+  /* Create the semaphores(s) */
+  /* creation of sensorSem */
+  sensorSemHandle = osSemaphoreNew(1, 0, &sensorSem_attributes);
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
@@ -152,9 +160,19 @@ void MX_FREERTOS_Init(void) {
 
   FallTaskHandle = osThreadNew(fallTask, NULL, &FallTask_attributes);
 
-  LedTaskHandle = osThreadNew(ledTask, &startConfig, &LedTask_attributes);
+  LedTaskHandle = osThreadNew(ledTask, NULL, &LedTask_attributes);
 
-   imuQueueHandle = osMessageQueueNew (5, sizeof(IMU_Data_t), &imuQueue_attributes);
+  TriggleTaskHandle = osThreadNew(triggleTask, NULL, &TriggleTask_attributes);
+  if(TriggleTaskHandle == NULL)
+{
+    printf("Trigger create failed\r\n");
+}
+else
+{
+    printf("Trigger create success\r\n");
+}
+
+  imuQueueHandle = osMessageQueueNew (5, sizeof(IMU_Data_t), &imuQueue_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -199,6 +217,8 @@ void sensorTask(void *argument)
 
   for(;;)
   {
+
+    osSemaphoreAcquire(sensorSemHandle, osWaitForever);
     // Simulate reading IMU data
     imu.ax = 100; // Example value
     imu.ay = 200; // Example value
@@ -207,10 +227,11 @@ void sensorTask(void *argument)
     imu.gy = 500; // Example value
     imu.gz = 600; // Example value
 
+    imu.timestamp++;
+
     // Send the IMU data to the queue
     osMessageQueuePut(imuQueueHandle, &imu, 0, 0);
     
-   osDelay(1000);
   }
   /* USER CODE END sensorTask */
 }
@@ -250,6 +271,17 @@ void ledTask(void *argument)
     // Toggle LED or perform some action
     HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_6); // Example: Toggle an LED on pin B0
     osDelay(500);
+  }
+}
+
+void triggleTask(void *argument)
+{
+  for(;;)
+  {
+    // Simulate triggering the sensor task
+   
+    osSemaphoreRelease(sensorSemHandle);
+    osDelay(1000); // Trigger every 1 second
   }
 }
 /* USER CODE END Application */
