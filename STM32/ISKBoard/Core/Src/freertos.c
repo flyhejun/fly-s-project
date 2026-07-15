@@ -79,12 +79,7 @@ const osThreadAttr_t LedTask_attributes = {
   .priority = (osPriority_t) osPriorityNormal,
 };
 
-osThreadId_t TriggleTaskHandle;
-const osThreadAttr_t TriggleTask_attributes = {
-  .name = "TriggleTask",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
-};
+
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -132,7 +127,7 @@ void MX_FREERTOS_Init(void) {
 
   /* Create the semaphores(s) */
   /* creation of sensorSem */
-  sensorSemHandle = osSemaphoreNew(1, 0, &sensorSem_attributes);
+  sensorSemHandle = osSemaphoreNew(1, 1, &sensorSem_attributes);
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
@@ -144,7 +139,7 @@ void MX_FREERTOS_Init(void) {
 
   /* Create the queue(s) */
   /* creation of imuQueue */
-
+  
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
@@ -161,16 +156,6 @@ void MX_FREERTOS_Init(void) {
   FallTaskHandle = osThreadNew(fallTask, NULL, &FallTask_attributes);
 
   LedTaskHandle = osThreadNew(ledTask, NULL, &LedTask_attributes);
-
-  TriggleTaskHandle = osThreadNew(triggleTask, NULL, &TriggleTask_attributes);
-  if(TriggleTaskHandle == NULL)
-{
-    printf("Trigger create failed\r\n");
-}
-else
-{
-    printf("Trigger create success\r\n");
-}
 
   imuQueueHandle = osMessageQueueNew (5, sizeof(IMU_Data_t), &imuQueue_attributes);
   /* USER CODE END RTOS_THREADS */
@@ -194,7 +179,7 @@ void StartDefaultTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    osDelay(100);
   }
   /* USER CODE END StartDefaultTask */
 }
@@ -229,6 +214,7 @@ void sensorTask(void *argument)
 
     imu.timestamp++;
 
+    printf("sensorTask: IMU data read:\n");
     // Send the IMU data to the queue
     osMessageQueuePut(imuQueueHandle, &imu, 0, 0);
     
@@ -274,15 +260,6 @@ void ledTask(void *argument)
   }
 }
 
-void triggleTask(void *argument)
-{
-  for(;;)
-  {
-    // Simulate triggering the sensor task
-   
-    osSemaphoreRelease(sensorSemHandle);
-    osDelay(1000); // Trigger every 1 second
-  }
-}
+
 /* USER CODE END Application */
 
