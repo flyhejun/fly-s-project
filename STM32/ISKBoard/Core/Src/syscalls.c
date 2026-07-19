@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <signal.h>
 #include <time.h>
+#include "cmsis_os.h"
 #include <sys/time.h>
 #include <sys/times.h>
 
@@ -77,14 +78,23 @@ __attribute__((weak)) int _read(int file, char *ptr, int len)
   return len;
 }
 
+extern osMutexId_t printfMutexHandle;
+
 __attribute__((weak)) int _write(int file, char *ptr, int len)
 {
   (void)file;
   int DataIdx;
 
+  /* Lock printf mutex to prevent interleaved output from multiple tasks */
+  if (osKernelGetState() == osKernelRunning) {
+    osMutexAcquire(printfMutexHandle, osWaitForever);
+  }
   for (DataIdx = 0; DataIdx < len; DataIdx++)
   {
     __io_putchar(*ptr++);
+  }
+  if (osKernelGetState() == osKernelRunning) {
+    osMutexRelease(printfMutexHandle);
   }
   return len;
 }
