@@ -3,6 +3,7 @@
 
 #include "main.h"
 
+#define I2C_DELAY_US  5   /* 默认 5μs ≈ 100kHz SCL */
 /* 软件I2C引脚 */
 #define SOFT_I2C_SCL_PORT     GPIOB
 #define SOFT_I2C_SCL_PIN      GPIO_PIN_10

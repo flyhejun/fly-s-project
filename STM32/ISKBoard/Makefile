@@ -76,7 +76,8 @@ Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F/port.c \
 Core/Src/sysmem.c \
 Core/Src/syscalls.c \
 Core/User/bsp/bsp_soft_i2c.c \
-Core/User/sensor/mpu6050.c
+Core/User/sensor/mpu6050.c \
+Core/User/algorithm/fall_detect.c
 
 # ASM sources
 ASM_SOURCES =  \
@@ -143,7 +144,8 @@ AS_INCLUDES =  \
 -IDrivers/CMSIS/Device/ST/STM32L4xx/Include \
 -IDrivers/CMSIS/Include \
 -ICore/User/bsp \
--ICore/User/sensor
+-ICore/User/sensor \
+-ICore/User/algorithm
 
 # C includes
 C_INCLUDES =  \
@@ -156,7 +158,8 @@ C_INCLUDES =  \
 -IDrivers/CMSIS/Device/ST/STM32L4xx/Include \
 -IDrivers/CMSIS/Include \
 -ICore/User/bsp \
--ICore/User/sensor
+-ICore/User/sensor \
+-ICore/User/algorithm
 
 # compile gcc flags
 ASFLAGS = $(MCU) $(AS_DEFS) $(AS_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections

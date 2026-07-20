@@ -28,11 +28,13 @@
 #include <signal.h>
 #include <time.h>
 #include "cmsis_os.h"
+#include "main.h"
 #include <sys/time.h>
 #include <sys/times.h>
 
 
 /* Variables */
+extern UART_HandleTypeDef huart1;
 extern int __io_putchar(int ch) __attribute__((weak));
 extern int __io_getchar(void) __attribute__((weak));
 
@@ -83,18 +85,14 @@ extern osMutexId_t printfMutexHandle;
 __attribute__((weak)) int _write(int file, char *ptr, int len)
 {
   (void)file;
-  int DataIdx;
+  extern osMutexId_t printfMutexHandle;
 
-  /* Lock printf mutex to prevent interleaved output from multiple tasks */
   if (osKernelGetState() == osKernelRunning) {
-    osMutexAcquire(printfMutexHandle, osWaitForever);
+      osMutexAcquire(printfMutexHandle, osWaitForever);
   }
-  for (DataIdx = 0; DataIdx < len; DataIdx++)
-  {
-    __io_putchar(*ptr++);
-  }
+  HAL_UART_Transmit(&huart1, (uint8_t *)ptr, len, HAL_MAX_DELAY);
   if (osKernelGetState() == osKernelRunning) {
-    osMutexRelease(printfMutexHandle);
+      osMutexRelease(printfMutexHandle);
   }
   return len;
 }

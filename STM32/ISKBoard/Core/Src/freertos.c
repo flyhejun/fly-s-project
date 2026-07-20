@@ -28,63 +28,35 @@
 #include <stdio.h>
 #include "bsp_soft_i2c.h"
 #include "mpu6050.h"
+#include "fall_detect.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
-/* IMU 数据结构：任务间通过 Queue 传递 */
-typedef struct
-{
-    int16_t ax;
-    int16_t ay;
-    int16_t az;
-
-    int16_t gx;
-    int16_t gy;
-    int16_t gz;
-
-    uint32_t timestamp;
-
-} IMU_Data_t;
-
-typedef enum {
-    STATE_NORMAL = 0,       // 正常状态
-    STATE_FREE_FALL,        // 疑似失重
-    STATE_IMPACT,           // 检测到冲击
-    STATE_MOTIONLESS,       // 冲击后静止（确认跌倒）
-} FallState_t;
 
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-/*
- * 跌倒检测阈值
- *
- * 量程 ±2g，灵敏度 16384 LSB/g
- * 静止 1g → accel_sq ≈ 268,000,000
- *
- * 下面统一用"平方和"来比较，避免开根号
- */
-
-/* 失重阈值: |a| < 0.5g → accel_sq < (0.5*16384)² ≈ 67M */
-/* 加速度平方和阈值 (量程±2g, 1g²≈2.68亿) */
-#define FREEFALL_THRESHOLD    70000000U   /* 失重: <0.5g  */
-#define IMPACT_THRESHOLD     1000000000U   /* 冲击: >2g    */
-#define STILL_LOW    130000000U   /* 静止下限 0.7g */
-#define STILL_HIGH    450000000U   /* 静止上限 1.3g */
-
-/* 时间阈值 (ms, 1tick=1ms) */
-#define IMPACT_WINDOW    800     /* 失重→冲击 窗口 */
-#define STILL_TIME    2000     /* 冲击→静止 确认 */
-
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
- 
+
+/* 整数平方根（二分查找，最大 16 次迭代） */
+static uint32_t isqrt(uint32_t n)
+{
+    if (n == 0) return 0;
+    uint32_t lo = 1, hi = 65535;
+    while (lo <= hi) {
+        uint32_t mid = (lo + hi) / 2;
+        if (mid * mid <= n) lo = mid + 1;
+        else                 hi = mid - 1;
+    }
+    return hi;
+}
+
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -101,12 +73,12 @@ osThreadId_t FallTaskHandle;
 const osThreadAttr_t FallTask_attributes = {
   .name = "FallTask",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityLow,
+  .priority = (osPriority_t) osPriorityNormal,
 };
 
-osThreadId_t LedTaskHandle;
-const osThreadAttr_t LedTask_attributes = {
-  .name = "LedTask",
+osThreadId_t AlarmTaskHandle;
+const osThreadAttr_t AlarmTask_attributes = {
+  .name = "AlarmTask",
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
@@ -130,6 +102,11 @@ osSemaphoreId_t sensorSemHandle;
 const osSemaphoreAttr_t sensorSem_attributes = {
   .name = "sensorSem"
 };
+/* Definitions for alarmSem */
+osSemaphoreId_t alarmSemHandle;
+const osSemaphoreAttr_t alarmSem_attributes = {
+  .name = "alarmSem"
+};
 /* Definitions for printfMutex */
 osMutexId_t printfMutexHandle;
 const osMutexAttr_t printfMutex_attributes = {
@@ -140,7 +117,7 @@ const osMutexAttr_t printfMutex_attributes = {
 /* USER CODE BEGIN FunctionPrototypes */
 void sensorTask(void *argument);
 void fallTask(void *argument);
-void ledTask(void *argument);
+void alarmTask(void *argument);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -169,6 +146,7 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
+  alarmSemHandle = osSemaphoreNew(5, 0, &alarmSem_attributes);
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
@@ -177,12 +155,11 @@ void MX_FREERTOS_Init(void) {
 
   /* Create the queue(s) */
   /* creation of imuQueue */
-  imuQueueHandle = osMessageQueueNew (5, sizeof(uint32_t), &imuQueue_attributes);
-
+ 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* Re-create imuQueue with correct item size */
-  imuQueueHandle = osMessageQueueNew(5, sizeof(IMU_Data_t), &imuQueue_attributes);
+  imuQueueHandle = osMessageQueueNew(20, sizeof(MPU6050_RawData_t), &imuQueue_attributes);
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -196,7 +173,7 @@ void MX_FREERTOS_Init(void) {
 
   FallTaskHandle = osThreadNew(fallTask, NULL, &FallTask_attributes);
 
-  LedTaskHandle = osThreadNew(ledTask, NULL, &LedTask_attributes);
+  AlarmTaskHandle = osThreadNew(alarmTask, NULL, &AlarmTask_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -238,7 +215,6 @@ void sensorTask(void *argument)
 {
   /* USER CODE BEGIN sensorTask */
   /* Infinite loop */
-  IMU_Data_t imu;
   MPU6050_RawData_t raw;  // MPU6050 原始数据
   uint8_t id;
 
@@ -251,29 +227,13 @@ void sensorTask(void *argument)
       printf("MPU6050 OK!\n");
 
       MPU6050_Init();                  // 配置量程、采样率等
-      printf("MPU6050 Init done.\n");
 
       for(;;)
       {
-          osSemaphoreAcquire(sensorSemHandle, osWaitForever);
-
-          // 从 MPU6050 读取全部 6 轴数据
+          osDelay(20);  // 20ms 周期采集 (50Hz)
           MPU6050_ReadAll(&raw);
 
-          // 映射到 IMU 数据结构（发送给 FallTask 处理）
-          imu.ax = raw.ax_raw;
-          imu.ay = raw.ay_raw;
-          imu.az = raw.az_raw;
-          imu.gx = raw.gx_raw;
-          imu.gy = raw.gy_raw;
-          imu.gz = raw.gz_raw;
-          imu.timestamp = osKernelGetTickCount();
-
-          osMessageQueuePut(imuQueueHandle, &imu, 0, 0);
-
-          printf("sensorTask: Accel(%d,%d,%d) Gyro(%d,%d,%d)\n",
-                 raw.ax_raw, raw.ay_raw, raw.az_raw,
-                 raw.gx_raw, raw.gy_raw, raw.gz_raw);
+          osMessageQueuePut(imuQueueHandle, &raw, 0, 0);
       }
   }
   else
@@ -305,124 +265,90 @@ void sensorTask(void *argument)
 void fallTask(void *argument)
 {
   /* USER CODE BEGIN fallTask */
-  IMU_Data_t imu;
-  uint32_t   accel_sq;          // 加速度平方和
-  FallState_t state = STATE_NORMAL;  // 状态机当前状态
-  TickType_t  state_enter_tick = 0; // 进入当前状态的时间戳
-  TickType_t  now;
+  MPU6050_RawData_t   raw;
+  FallDetect_Input_t input;
+  FallEvent_t        event;
+  uint32_t            g_int, g_frac;
+  /* ---- 初始化跌倒检测算法 ---- */
+  const FallDetect_Config_t config = {
+      .freefall_threshold = 70000000U,
+      .impact_threshold   = 1000000000U,
+      .still_low          = 130000000U,
+      .still_high         = 450000000U,
+      .impact_window_ms   = 800,
+      .still_time_ms      = 2000,
+      .impact_timeout_ms  = 5000,
+      .alarm_hold_ms     = 30000,   /* 报警后 30 秒不响应新跌倒 */
+  };
+  FallDetect_Init(&config);
 
-  for(;;)
-  {
-    if (osMessageQueueGet(imuQueueHandle, &imu, NULL, osWaitForever) == osOK)
-    {
-        now = osKernelGetTickCount();
-        // 第一步：计算合加速度的平方和
-        accel_sq = (uint32_t)imu.ax * imu.ax
-                 + (uint32_t)imu.ay * imu.ay
-                 + (uint32_t)imu.az * imu.az;
-        /*
-         *   每个 case 做两件事：
-         *     1. 判断是否需要跳转到下一个状态
-         *     2. 判断是否超时（跳回 NORMAL）
-         */
-        switch (state)
-        {
-            case STATE_NORMAL:
-            /*
-             * 失重条件：accel_sq < FREEFALL_THRESHOLD
-             * 进入失重条件后，记录时间戳，便于后续判断持续时间
-             */
-              if (accel_sq < FREEFALL_THRESHOLD)
-              {
-                  state = STATE_FREE_FALL;
-                  state_enter_tick = now;
-                  printf("[FALL] FREE_FALL detected! sq=%lu\n", accel_sq);
-              }
-              break;
+  for (;;) {
+      if (osMessageQueueGet(imuQueueHandle, &raw, NULL, osWaitForever) == osOK) {
 
-        /* ---------- FREE_FALL：等待冲击 ---------- */
-            case STATE_FREE_FALL:
-            /*
-             * 冲击条件：accel_sq > IMPACT_THRESHOLD
-             * 失重后必须短时间内（IMPACT_WINDOW）检测到冲击，
-             * 否则只是普通的下蹲或跳跃
-             */
-              if (accel_sq>IMPACT_THRESHOLD && (now-state_enter_tick)<IMPACT_WINDOW)
-              {
-                  state = STATE_IMPACT;
-                  state_enter_tick = now;
-                  printf("[FALL] IMPACT! sq=%lu\n", accel_sq);                
-              }
-            else if ((now - state_enter_tick) > IMPACT_WINDOW)
-            {
-                state = STATE_NORMAL;
-            }
-            break;
+          /* ---- 数据预处理 ---- */
+          input.accel_sq = (uint32_t)raw.ax_raw * raw.ax_raw
+                         + (uint32_t)raw.ay_raw * raw.ay_raw
+                         + (uint32_t)raw.az_raw * raw.az_raw;
+          input.timestamp_ms = osKernelGetTickCount();
 
-        /* ---------- IMPACT：等待静止确认 ---------- */
-        case STATE_IMPACT:
-            /*
-             * 静止条件：accel_sq 回到 1g 附近（STILL_LOW ~ HIGH）
-             * 撞地后人弹起再静止有一个过程，所以要持续观察
-             */
-            if (accel_sq>STILL_LOW && accel_sq<STILL_HIGH)
-            {
-                if ((now - state_enter_tick) >= STILL_TIME)
-                {
-                    state = STATE_MOTIONLESS;
-                    state_enter_tick = now;
-                    printf("[FALL] *** MOTIONLESS —— FALL CONFIRMED! ***\n");
-                }
-            }
-            else
-            {
-                // 还没静止，重置计时器
-                state_enter_tick = now;
-            }
+          /* 预留：gyro 原始值 */
+          input.gyro_x_dps = raw.gx_raw / 131.0f;  // ±250°/s 对应灵敏度 131 LSB/(°/s)
+          input.gyro_y_dps = raw.gy_raw / 131.0f;
+          input.gyro_z_dps = raw.gz_raw / 131.0f;
+          input.pitch = 0.0f;
+          input.roll  = 0.0f;
 
-            // IMPACT 超时保护：冲击后太久没静止，回 NORMAL
-            if ((now - state_enter_tick)>5000 && state!=STATE_MOTIONLESS)
-            {
-                state = STATE_NORMAL;
-                printf("[FALL] MOTIONLESS timeout, back to NORMAL\n");
-            }
-            break;
-
-        /* ---------- MOTIONLESS：跌倒已确认 ---------- */
-        case STATE_MOTIONLESS:
-            /*
-             * 跌倒确认后，打印报警，然后复位状态机。
-             * 复位后可以继续检测下一次跌倒。
-             */
-            printf("[FALL] *** ALARM: FALL DETECTED! ***\n");
-
-            // 可以在这里加 LED 闪烁报警
-            // HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_6);
-
-            // 复位状态机，准备检测下一次
-            state = STATE_NORMAL;
-            break;
-
-        default:
-            state = STATE_NORMAL;
-            break;
-        }
-
-        // 每次都打印当前状态（调试用）
-        printf("  state=%d, sq=%lu\n", (int)state, accel_sq);
-    }
+          /* ---- 调用跌倒算法 ---- */
+          event = FallDetect_Process(&input);
+        
+            uint32_t mag = isqrt(input.accel_sq);
+            g_int  = mag / 16384;
+            g_frac = ((mag % 16384) * 100) / 16384;
+          /* ---- 事件 → 动作 ---- */
+          switch (event) 
+          {
+              case FALL_EVENT_FREEFALL:
+                  printf("[FALL] FREE_FALL detected! g=%lu.%02lu\n", g_int, g_frac);
+                  break;
+              case FALL_EVENT_IMPACT:
+                  printf("[FALL] IMPACT! g=%lu.%02lu\n\n", g_int, g_frac);
+                  break;
+              case FALL_EVENT_FALL_CONFIRMED:
+                  printf("[FALL] *** ALARM: FALL DETECTED! ***\n");
+                  osSemaphoreRelease(alarmSemHandle);
+                  break;
+              case FALL_EVENT_TIMEOUT:
+                  printf("[FALL] timeout, back to NORMAL\n");
+                  break;
+              default:
+                  break;
+          }
+         
+          printf("  state=%d, g=%lu.%02lu\n",
+                 (int)FallDetect_GetState(), g_int, g_frac);
+      }
   }
   /* USER CODE END fallTask */
 }
-void ledTask(void *argument)
+void alarmTask(void *argument)
 {
+  /* USER CODE BEGIN alarmTask */
+  for (;;) {
+      osSemaphoreAcquire(alarmSemHandle, osWaitForever);
+       // 蜂鸣器响
+      for(int i=0; i<5; i++)
+      {
+          HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_6);
+          osDelay(100);
+      }
+      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_SET); 
+      osDelay(1000);  // 蜂鸣器响 1 秒
+      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_RESET);  // 蜂鸣器关闭
 
-  for(;;)
-  {
-    // Toggle LED or perform some action
-    HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_6); // Example: Toggle an LED on pin B0
-    osDelay(500);
+      /* TODO: 你来写 — LED 快闪 5 次 + 蜂鸣器响 1 秒 */
+
   }
+  /* USER CODE END alarmTask */
 }
 
 

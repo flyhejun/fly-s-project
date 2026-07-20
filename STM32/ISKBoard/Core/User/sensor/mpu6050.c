@@ -36,21 +36,16 @@ void MPU6050_Init(void)
      */
     I2C_WriteOneByte(MPU6050_ADDR, MPU6050_REG_PWR_MGMT_1, 0x00);
     HAL_Delay(100);  // 等待芯片从睡眠唤醒（数据手册建议）
-
     /*
      * 2. 配置采样率
      *    公式: 采样率 = 1kHz / (1 + SMPLRT_DIV) = 1k / 8 = 125Hz
-     *    每 8ms 产生一组新数据，跌倒检测够用了
      */
     I2C_WriteOneByte(MPU6050_ADDR, MPU6050_REG_SAMPLE_RATE_DIV, 0x07);
-
     /*
      * 3. 低通滤波器配置
      *    DLPF_CFG = 0 → 加速度带宽 260Hz, 陀螺仪带宽 256Hz
-     *    不额外滤波，保留原始高频信息用于跌倒冲击检测
      */
     I2C_WriteOneByte(MPU6050_ADDR, MPU6050_REG_DLPF_CONFIG, 0x00);
-
     /*
      * 4. 陀螺仪量程：±250°/s
      *    灵敏度最高 (131 LSB/°/s)，跌倒检测用得到精细的角速度数据

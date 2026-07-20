@@ -34,19 +34,11 @@
 #define MPU6050_REG_GYRO_DATA_START   0x43  // 陀螺仪数据起始地址
 
 /* ==================== 量程与灵敏度对照 ==================== */
-
 /*
  * 加速度计量程选择（写入 ACCEL_CONFIG 寄存器的值）：
  *   0x00 → ±2g   → 灵敏度 16384 LSB/g  ← 跌倒检测推荐用这个
- *   0x08 → ±4g   → 灵敏度  8192 LSB/g
- *   0x10 → ±8g   → 灵敏度  4096 LSB/g
- *   0x18 → ±16g  → 灵敏度  2048 LSB/g
  */
 #define MPU6050_ACCEL_RANGE_2G        0x00
-#define MPU6050_ACCEL_RANGE_4G        0x08
-#define MPU6050_ACCEL_RANGE_8G        0x10
-#define MPU6050_ACCEL_RANGE_16G       0x18
-
 /* 加速度灵敏度：原始值 ÷ 灵敏度 = g 值 */
 typedef enum {
     MPU6050_ACCEL_SCALE_2G  = 16384,
@@ -58,14 +50,8 @@ typedef enum {
 /*
  * 陀螺仪量程选择（写入 GYRO_CONFIG 寄存器的值）：
  *   0x00 →  ±250°/s  → 灵敏度 131   LSB/(°/s)
- *   0x08 →  ±500°/s  → 灵敏度 65.5  LSB/(°/s)
- *   0x10 → ±1000°/s  → 灵敏度 32.8  LSB/(°/s)
- *   0x18 → ±2000°/s  → 灵敏度 16.4  LSB/(°/s)
  */
 #define MPU6050_GYRO_RANGE_250DPS      0x00
-#define MPU6050_GYRO_RANGE_500DPS      0x08
-#define MPU6050_GYRO_RANGE_1000DPS     0x10
-#define MPU6050_GYRO_RANGE_2000DPS     0x18
 
 /* 陀螺仪灵敏度：原始值 ÷ 灵敏度 = °/s */
 typedef enum {

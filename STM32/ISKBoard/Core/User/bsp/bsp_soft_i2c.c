@@ -22,13 +22,23 @@ HAL_GPIO_WritePin(SOFT_I2C_SCL_PORT,SOFT_I2C_SCL_PIN,GPIO_PIN_RESET)
 
 static void I2C_Delay(void)
 {
-    for(volatile int i=0;i<50;i++);
+    uint32_t start = DWT->CYCCNT;
+    uint32_t cycles = I2C_DELAY_US * (SystemCoreClock / 1000000U);
+    while ((DWT->CYCCNT - start) < cycles) 
+    {
+        /* 空循环等待 */
+    }
 }
 
 void I2C_Init(void)
 {
     SDA_HIGH();
     SCL_HIGH();
+
+    /* 使能 DWT 周期计数器（用于 I2C 精确延时） */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CYCCNT = 0;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 }
 
 void I2C_Start(void)
