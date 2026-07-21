@@ -79,7 +79,7 @@ const osThreadAttr_t FallTask_attributes = {
 osThreadId_t AlarmTaskHandle;
 const osThreadAttr_t AlarmTask_attributes = {
   .name = "AlarmTask",
-  .stack_size = 128 * 4,
+  .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 
@@ -142,7 +142,7 @@ void MX_FREERTOS_Init(void) {
 
   /* Create the semaphores(s) */
   /* creation of sensorSem */
-  sensorSemHandle = osSemaphoreNew(1, 1, &sensorSem_attributes);
+  sensorSemHandle = osSemaphoreNew(1, 0, &sensorSem_attributes);
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
@@ -182,6 +182,8 @@ void MX_FREERTOS_Init(void) {
 
 }
 
+
+
 /* USER CODE BEGIN Header_StartDefaultTask */
 /**
   * @brief  Function implementing the defaultTask thread.
@@ -203,6 +205,28 @@ void StartDefaultTask(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
+
+/* 报警逻辑：LED + 蜂鸣器 */
+static void alarm_routine(uint32_t tick_start)
+{
+    while ((osKernelGetTickCount() - tick_start) <= 10000) {
+        if (osSemaphoreAcquire(sensorSemHandle, 0) == osOK) {
+            /* 按键取消报警 */
+            HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_RESET);
+            return;
+        }
+
+        HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_6);
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_SET);
+        HAL_Delay(200);
+    }
+
+    /* 超时关闭 */
+    HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_RESET);
+    return;
+}
 
 /* USER CODE BEGIN Header_sensorTask */
 /**
@@ -266,8 +290,9 @@ void fallTask(void *argument)
 {
   /* USER CODE BEGIN fallTask */
   MPU6050_RawData_t   raw;
-  FallDetect_Input_t input;
-  FallEvent_t        event;
+  FallDetect_Input_t  input;
+  FallEvent_t         event;
+  uint32_t            mag;
   uint32_t            g_int, g_frac;
   /* ---- 初始化跌倒检测算法 ---- */
   const FallDetect_Config_t config = {
@@ -282,16 +307,16 @@ void fallTask(void *argument)
   };
   FallDetect_Init(&config);
 
-  for (;;) {
-      if (osMessageQueueGet(imuQueueHandle, &raw, NULL, osWaitForever) == osOK) {
-
+  for (;;) 
+  {
+      if (osMessageQueueGet(imuQueueHandle, &raw, NULL, osWaitForever) == osOK) 
+      {
           /* ---- 数据预处理 ---- */
           input.accel_sq = (uint32_t)raw.ax_raw * raw.ax_raw
                          + (uint32_t)raw.ay_raw * raw.ay_raw
                          + (uint32_t)raw.az_raw * raw.az_raw;
           input.timestamp_ms = osKernelGetTickCount();
-
-          /* 预留：gyro 原始值 */
+  
           input.gyro_x_dps = raw.gx_raw / 131.0f;  // ±250°/s 对应灵敏度 131 LSB/(°/s)
           input.gyro_y_dps = raw.gy_raw / 131.0f;
           input.gyro_z_dps = raw.gz_raw / 131.0f;
@@ -301,7 +326,7 @@ void fallTask(void *argument)
           /* ---- 调用跌倒算法 ---- */
           event = FallDetect_Process(&input);
         
-            uint32_t mag = isqrt(input.accel_sq);
+            mag = isqrt(input.accel_sq);
             g_int  = mag / 16384;
             g_frac = ((mag % 16384) * 100) / 16384;
           /* ---- 事件 → 动作 ---- */
@@ -315,7 +340,7 @@ void fallTask(void *argument)
                   break;
               case FALL_EVENT_FALL_CONFIRMED:
                   printf("[FALL] *** ALARM: FALL DETECTED! ***\n");
-                  osSemaphoreRelease(alarmSemHandle);
+                  xTaskNotifyGive(AlarmTaskHandle);
                   break;
               case FALL_EVENT_TIMEOUT:
                   printf("[FALL] timeout, back to NORMAL\n");
@@ -330,23 +355,16 @@ void fallTask(void *argument)
   }
   /* USER CODE END fallTask */
 }
-void alarmTask(void *argument)
+ void alarmTask(void *argument)
 {
   /* USER CODE BEGIN alarmTask */
-  for (;;) {
-      osSemaphoreAcquire(alarmSemHandle, osWaitForever);
-       // 蜂鸣器响
-      for(int i=0; i<5; i++)
-      {
-          HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_6);
-          osDelay(100);
-      }
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_SET); 
-      osDelay(1000);  // 蜂鸣器响 1 秒
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_RESET);  // 蜂鸣器关闭
+  for (;;)
+  {
+      ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-      /* TODO: 你来写 — LED 快闪 5 次 + 蜂鸣器响 1 秒 */
-
+      uint32_t time_start = osKernelGetTickCount();
+      alarm_routine(time_start);
+      FallDetect_Reset();
   }
   /* USER CODE END alarmTask */
 }

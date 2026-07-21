@@ -103,7 +103,7 @@ FallEvent_t FallDetect_Process(const FallDetect_Input_t *input)
             /* ======== MOTIONLESS：跌倒已确认 ======== */
             case FALL_STATE_MOTIONLESS:
                 /*
-                 * 自动复位，准备检测下一次跌倒。
+                 * 报警后保持一段时间不响应新跌倒
                  */
                 if((now - state_enter_tick) >= cfg.alarm_hold_ms)
                 {

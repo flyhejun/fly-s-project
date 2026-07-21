@@ -20,7 +20,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "gpio.h"
-
+#include <stdio.h>
 /* USER CODE BEGIN 0 */
 #include "cmsis_os.h"
 /* USER CODE END 0 */
@@ -54,7 +54,7 @@ void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOB, MPU_SCL_Pin|MPU_SDA_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_SET);
 
   /*Configure GPIO pins : MPU_SCL_Pin MPU_SDA_Pin */
   GPIO_InitStruct.Pin = MPU_SCL_Pin|MPU_SDA_Pin;
@@ -66,7 +66,7 @@ void MX_GPIO_Init(void)
   /*Configure GPIO pin : PB13 */
   GPIO_InitStruct.Pin = GPIO_PIN_13;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PC6 */
