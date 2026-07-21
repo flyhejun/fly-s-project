@@ -29,6 +29,7 @@
 #include "bsp_soft_i2c.h"
 #include "mpu6050.h"
 #include "fall_detect.h"
+#include "imubuf.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -222,7 +223,7 @@ static void alarm_routine(uint32_t tick_start)
         HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_SET);
         vTaskDelay(pdMS_TO_TICKS(200));
     }
-
+    
     /* 超时关闭 */
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_SET);
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_RESET);
@@ -255,7 +256,7 @@ void sensorTask(void *argument)
 
       for(;;)
       {
-          osDelay(50);  // 50ms 周期采集 (20Hz)
+          osDelay(20);  // 20ms 周期采集 (50Hz)
           MPU6050_ReadAll(&raw);
 
           osMessageQueuePut(imuQueueHandle, &raw, 0, 0);
@@ -299,7 +300,9 @@ void fallTask(void *argument)
       .impact_timeout_ms  = 5000,
       .alarm_hold_ms      = 15000,   /* 报警后 15 秒不响应新跌倒 */
   };
+
   FallDetect_Init(&config);
+  IMUBuf_Init();
 
   for (;;) 
   {
@@ -318,6 +321,7 @@ void fallTask(void *argument)
           input.roll  = 0.0f;
 
           /* ---- 调用跌倒算法 ---- */
+          IMUBuf_PushData(input.timestamp_ms, &raw, input.accel_sq);
           event = FallDetect_Process(&input);
         
             mag = isqrt(input.accel_sq);
@@ -334,7 +338,8 @@ void fallTask(void *argument)
                   break;
               case FALL_EVENT_FALL_CONFIRMED:
                   printf("[FALL] *** ALARM: FALL DETECTED! ***\n");
-                  xTaskNotifyGive(AlarmTaskHandle);
+                  IMUBuf_Trigger(0);
+                  osSemaphoreRelease(alarmSemHandle);
                   break;
               case FALL_EVENT_TIMEOUT:
                   printf("[FALL] timeout, back to NORMAL\n");
@@ -354,11 +359,13 @@ void fallTask(void *argument)
   /* USER CODE BEGIN alarmTask */
   for (;;)
   {
-      ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+      osSemaphoreAcquire(alarmSemHandle, osWaitForever);
       
       uint32_t time_start = osKernelGetTickCount();
       alarm_routine(time_start);
       FallDetect_Reset();
+      IMUBuf_DumpAll();
+      IMUBuf_Reset();
   }
   /* USER CODE END alarmTask */
 }

@@ -77,7 +77,8 @@ Core/Src/sysmem.c \
 Core/Src/syscalls.c \
 Core/User/bsp/bsp_soft_i2c.c \
 Core/User/sensor/mpu6050.c \
-Core/User/algorithm/fall_detect.c
+Core/User/algorithm/fall_detect.c \
+Core/User/algorithm/imubuf.c
 
 # ASM sources
 ASM_SOURCES =  \
