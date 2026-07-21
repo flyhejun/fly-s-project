@@ -72,7 +72,7 @@ const osThreadAttr_t SensorTask_attributes = {
 osThreadId_t FallTaskHandle;
 const osThreadAttr_t FallTask_attributes = {
   .name = "FallTask",
-  .stack_size = 128 * 4,
+  .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 
@@ -209,7 +209,8 @@ void StartDefaultTask(void *argument)
 /* 报警逻辑：LED + 蜂鸣器 */
 static void alarm_routine(uint32_t tick_start)
 {
-    while ((osKernelGetTickCount() - tick_start) <= 10000) {
+    while ((osKernelGetTickCount() - tick_start) <= 15000)
+     {
         if (osSemaphoreAcquire(sensorSemHandle, 0) == osOK) {
             /* 按键取消报警 */
             HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_SET);
@@ -219,7 +220,7 @@ static void alarm_routine(uint32_t tick_start)
 
         HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_6);
         HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11, GPIO_PIN_SET);
-        HAL_Delay(200);
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
 
     /* 超时关闭 */
@@ -254,7 +255,7 @@ void sensorTask(void *argument)
 
       for(;;)
       {
-          osDelay(20);  // 20ms 周期采集 (50Hz)
+          osDelay(50);  // 50ms 周期采集 (20Hz)
           MPU6050_ReadAll(&raw);
 
           osMessageQueuePut(imuQueueHandle, &raw, 0, 0);
@@ -262,13 +263,6 @@ void sensorTask(void *argument)
   }
   else
   {
-      /*
-       * ID 读对不上 —— 可能的原因：
-       *   1. SDA/SCL 接反了
-       *   2. MPU6050 未供电
-       *   3. I2C 上拉电阻没接
-       *   4. I2C 时序太快（Delay 循环不够）
-       */
       printf("MPU6050 ERROR: Wrong ID!\n");
 
       for(;;)
@@ -303,7 +297,7 @@ void fallTask(void *argument)
       .impact_window_ms   = 800,
       .still_time_ms      = 2000,
       .impact_timeout_ms  = 5000,
-      .alarm_hold_ms     = 30000,   /* 报警后 30 秒不响应新跌倒 */
+      .alarm_hold_ms      = 15000,   /* 报警后 15 秒不响应新跌倒 */
   };
   FallDetect_Init(&config);
 
@@ -361,7 +355,7 @@ void fallTask(void *argument)
   for (;;)
   {
       ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-
+      
       uint32_t time_start = osKernelGetTickCount();
       alarm_routine(time_start);
       FallDetect_Reset();
