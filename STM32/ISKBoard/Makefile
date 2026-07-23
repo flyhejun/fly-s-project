@@ -79,7 +79,8 @@ Core/User/bsp/bsp_soft_i2c.c \
 Core/User/sensor/mpu6050.c \
 Core/User/algorithm/fall_detect.c \
 Core/User/algorithm/imubuf.c \
-Core/User/comm/comm_protocol.c \
+Core/User/common/comm_protocol.c \
+Core/User/communication/esp32_ble.c \
 Core/User/common/util.c
 
 # ASM sources
@@ -149,8 +150,8 @@ AS_INCLUDES =  \
 -ICore/User/bsp \
 -ICore/User/sensor \
 -ICore/User/algorithm \
--ICore/User/comm \
 -ICore/User/common \
+-ICore/User/communication \
 
 
 # C includes
@@ -166,8 +167,8 @@ C_INCLUDES =  \
 -ICore/User/bsp \
 -ICore/User/sensor \
 -ICore/User/algorithm \
--ICore/User/comm \
 -ICore/User/common \
+-ICore/User/communication \
 
 
 # compile gcc flags

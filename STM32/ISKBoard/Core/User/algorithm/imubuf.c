@@ -22,7 +22,6 @@
   */
 #include "imubuf.h"
 #include <stddef.h>
-#include <stdio.h>
 /* ================================================================
  *  常量
  * ================================================================ */
@@ -111,44 +110,6 @@ void IMUBuf_Trigger(uint8_t event_id)
     s_event_id   = event_id;
     s_triggered  = 1;
     s_post_cnt   = 0;
-}
-
-/**
-  * @brief  通过串口导出全部事件数据
-  *
-  * 输出 256 行 CSV（ts, accel_sq, gyro_sq）
-  * 在报警期间或结束后调用，数据就绪时一次打完。
-  */
-void IMUBuf_Dump(void)
-{
-    int32_t             min_off;
-    int32_t             max_off;
-    int32_t             i;
-    uint32_t            pos;
-    const IMU_Sample_t *s;
-
-    if (s_triggered != 2) {
-        printf("[IMUBuf] no event data\n");
-        return;
-    }
-
-    min_off = -(int32_t)(IMUBUF_PRE_CNT - 1);   /* -105 */
-    max_off = (int32_t)IMUBUF_POST_CNT;          /* +150 */
-
-    printf("[IMUBuf] event dump (%ld frames):\n"
-           "ts,accel_sq,gyro_sq\n",
-           (long)(max_off - min_off + 1));
-
-    for (i = min_off; i <= max_off; i++) {
-        pos = (s_mark - 1 + i + IMUBUF_SIZE) & IMUBUF_MASK;
-        s = &s_buffer[pos];
-        printf("%lu,%lu,%lu\n",
-               (unsigned long)s->timestamp_ms,
-               (unsigned long)s->accel_sq,
-               (unsigned long)s->gyro_sq);
-    }
-
-    printf("[IMUBuf] end\n");
 }
 
 /**

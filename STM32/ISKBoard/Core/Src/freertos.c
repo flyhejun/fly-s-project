@@ -32,6 +32,7 @@
 #include "comm_protocol.h"
 #include "imubuf.h"
 #include "util.h"
+#include "esp32_ble.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -235,12 +236,12 @@ void sensorTask(void *argument)
 
   /* --- I2C & MPU6050 初始化 --- */
   I2C_Init();                          // 初始化 I2C 引脚
+  ESP32_Init();
+  
 
   id = MPU6050_ReadID();               // 读取芯片 ID 验证通信
   if (id == MPU6050_ADDR)              // 检查 ID 是否正确 (0x68)
   {
-      printf("MPU6050 OK!\n");
-
       MPU6050_Init();                  // 配置量程、采样率等
 
       for(;;)
@@ -255,7 +256,6 @@ void sensorTask(void *argument)
   else
   {
       printf("MPU6050 ERROR: Wrong ID!\n");
-
       for(;;)
       {
           osDelay(1000);  // 出错后挂起，不采样
@@ -343,8 +343,9 @@ void fallTask(void *argument)
 }
  void alarmTask(void *argument)
 {
-  FallEvent_Data_t event;
-
+  FallEvent_Data_t  event;
+  uint8_t           notify_buf[COMM_NOTIFY_FRAME_LEN];
+  uint16_t          len = 0;
   /* USER CODE BEGIN alarmTask */
   for (;;)
   {
@@ -355,12 +356,11 @@ void fallTask(void *argument)
       FallDetect_Reset();
       IMUBuf_GetPeak(&event);
 
-      /* 打包并打印帧内容（验证二进制帧格式） */
-      uint8_t notify_buf[COMM_NOTIFY_FRAME_LEN];
-      uint16_t len = Comm_PackNotify(notify_buf, &event);
-      dump_hex(notify_buf, len);
+      len = Comm_PackNotify(notify_buf, &event);
+      
+      ESP32_Send(notify_buf, len);
 
-      IMUBuf_Dump();
+      /*IMUBuf_Dump();*/
       IMUBuf_Reset();
   }
   /* USER CODE END alarmTask */

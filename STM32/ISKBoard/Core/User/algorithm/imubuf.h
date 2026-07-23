@@ -6,7 +6,7 @@
   * 设计思路：
   *   1. 256 帧环形缓冲区，始终写入，循环覆盖最旧帧
   *   2. IMUBuf_Trigger() 标记事件位置，再写入 150 帧后冻结
-  *   3. IMUBuf_DumpAll() 输出全部 256 帧 CSV
+  *   3. IMUBuf_GetPeak() 提取事件峰值+零拷贝样本指针
   *   4. IMUBuf_Reset() 解锁，回到写入模式
   *
   * 使用方式：
@@ -14,8 +14,8 @@
   *       IMUBuf_PushData(ts, &raw, accel_sq);  // 始终写入
   *       if (跌倒确认) IMUBuf_Trigger(0);        // 标记事件
   *   }
-  *   IMUBuf_DumpAll();    // 报警期间导出 CSV
-  *   IMUBuf_Reset();      // 回到写入模式
+  *   IMUBuf_GetPeak(&event);  // 报警期间提取事件数据
+  *   IMUBuf_Reset();          // 回到写入模式
   *
   * 零 RTOS 依赖，纯数据入/数据出。
   ******************************************************************************
@@ -66,8 +66,6 @@ void IMUBuf_Init(void);
 void IMUBuf_PushData(uint32_t timestamp_ms, const MPU_Raw_t *raw, uint32_t accel_sq, uint32_t gyro_sq);
 
 void IMUBuf_Trigger(uint8_t event_id);
-
-void IMUBuf_Dump(void);
 
 void IMUBuf_GetPeak(FallEvent_Data_t *event);
 
