@@ -78,7 +78,9 @@ Core/Src/syscalls.c \
 Core/User/bsp/bsp_soft_i2c.c \
 Core/User/sensor/mpu6050.c \
 Core/User/algorithm/fall_detect.c \
-Core/User/algorithm/imubuf.c
+Core/User/algorithm/imubuf.c \
+Core/User/comm/comm_protocol.c \
+Core/User/common/util.c
 
 # ASM sources
 ASM_SOURCES =  \
@@ -146,7 +148,10 @@ AS_INCLUDES =  \
 -IDrivers/CMSIS/Include \
 -ICore/User/bsp \
 -ICore/User/sensor \
--ICore/User/algorithm
+-ICore/User/algorithm \
+-ICore/User/comm \
+-ICore/User/common \
+
 
 # C includes
 C_INCLUDES =  \
@@ -160,7 +165,10 @@ C_INCLUDES =  \
 -IDrivers/CMSIS/Include \
 -ICore/User/bsp \
 -ICore/User/sensor \
--ICore/User/algorithm
+-ICore/User/algorithm \
+-ICore/User/comm \
+-ICore/User/common \
+
 
 # compile gcc flags
 ASFLAGS = $(MCU) $(AS_DEFS) $(AS_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections

@@ -41,9 +41,10 @@ void FallDetect_Init(const FallDetect_Config_t *config)
   */
 FallEvent_t FallDetect_Process(const FallDetect_Input_t *input)
 {
-    uint32_t   accel_sq = input->accel_sq;
-    uint32_t   now      = input->timestamp_ms;
-    FallEvent_t event   = FALL_EVENT_NONE;
+    uint32_t    accel_sq = input->accel_sq;
+    uint32_t    gyro_sq  = input->gyro_sq;
+    uint32_t    now      = input->timestamp_ms;
+    FallEvent_t event    = FALL_EVENT_NONE;
 
     switch (state) 
     {
@@ -58,9 +59,9 @@ FallEvent_t FallDetect_Process(const FallDetect_Input_t *input)
                 break;
             /* ======== FREE_FALL：等待冲击（有时间窗） ======== */
             case FALL_STATE_FREE_FALL:
-                if (accel_sq > cfg.impact_threshold &&(now - state_enter_tick) <= cfg.impact_window_ms) 
+                if (accel_sq>cfg.impact_threshold && gyro_sq>cfg.gyro_thr && (now-state_enter_tick)<=cfg.impact_window_ms)
                 {
-                    /* 失重后窗口期内检测到冲击 → 进入 IMPACT */
+                    /* 失重后窗口期内加速度+角速度都超阈值 → IMPACT */
                     state = FALL_STATE_IMPACT;
                     state_enter_tick  = now;
                     impact_start_tick = now;      /* ← 独立记录，永不重置 */

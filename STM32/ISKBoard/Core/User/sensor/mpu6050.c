@@ -83,12 +83,15 @@ void MPU6050_Init(void)
  *
  * 一次 I2C 读 14 字节 → 效率最高
  */
-void MPU6050_ReadAll(MPU6050_RawData_t *data)
+uint8_t MPU6050_ReadAll(MPU_Raw_t *data)
 {
     uint8_t buf[14];
 
     /* 从 0x3B 连续读 14 字节 */
-    I2C_ReadBytes(MPU6050_ADDR, MPU6050_REG_ACCEL_DATA_START, buf, 14);
+    if(I2C_ReadBytes(MPU6050_ADDR, MPU6050_REG_ACCEL_DATA_START, buf, 14) != 0)
+    {
+        return 1;
+    }
 
     /*
      * 拼接：高字节 << 8 | 低字节
@@ -107,4 +110,6 @@ void MPU6050_ReadAll(MPU6050_RawData_t *data)
     data->gx_raw = (int16_t)((buf[8]  << 8) | buf[9]);
     data->gy_raw = (int16_t)((buf[10] << 8) | buf[11]);
     data->gz_raw = (int16_t)((buf[12] << 8) | buf[13]);
+
+    return 0;
 }

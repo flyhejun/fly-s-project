@@ -29,7 +29,9 @@
 #include "bsp_soft_i2c.h"
 #include "mpu6050.h"
 #include "fall_detect.h"
+#include "comm_protocol.h"
 #include "imubuf.h"
+#include "util.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -44,19 +46,6 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
-/* 整数平方根（二分查找，最大 16 次迭代） */
-static uint32_t isqrt(uint32_t n)
-{
-    if (n == 0) return 0;
-    uint32_t lo = 1, hi = 65535;
-    while (lo <= hi) {
-        uint32_t mid = (lo + hi) / 2;
-        if (mid * mid <= n) lo = mid + 1;
-        else                 hi = mid - 1;
-    }
-    return hi;
-}
 
 /* USER CODE END PM */
 
@@ -147,7 +136,7 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
-  alarmSemHandle = osSemaphoreNew(5, 0, &alarmSem_attributes);
+  alarmSemHandle = osSemaphoreNew(1, 0, &alarmSem_attributes);
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
@@ -160,7 +149,7 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* Re-create imuQueue with correct item size */
-  imuQueueHandle = osMessageQueueNew(20, sizeof(MPU6050_RawData_t), &imuQueue_attributes);
+  imuQueueHandle = osMessageQueueNew(20, sizeof(MPU_Raw_t), &imuQueue_attributes);
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -241,7 +230,7 @@ void sensorTask(void *argument)
 {
   /* USER CODE BEGIN sensorTask */
   /* Infinite loop */
-  MPU6050_RawData_t raw;  // MPU6050 原始数据
+  MPU_Raw_t raw;  // MPU6050 原始数据
   uint8_t id;
 
   /* --- I2C & MPU6050 初始化 --- */
@@ -257,9 +246,10 @@ void sensorTask(void *argument)
       for(;;)
       {
           osDelay(20);  // 20ms 周期采集 (50Hz)
-          MPU6050_ReadAll(&raw);
-
-          osMessageQueuePut(imuQueueHandle, &raw, 0, 0);
+          if(MPU6050_ReadAll(&raw) == 0)
+          {
+            osMessageQueuePut(imuQueueHandle, &raw, 0, 0);
+          }   
       }
   }
   else
@@ -284,21 +274,22 @@ void sensorTask(void *argument)
 void fallTask(void *argument)
 {
   /* USER CODE BEGIN fallTask */
-  MPU6050_RawData_t   raw;
+  MPU_Raw_t   raw;
   FallDetect_Input_t  input;
   FallEvent_t         event;
   uint32_t            mag;
   uint32_t            g_int, g_frac;
   /* ---- 初始化跌倒检测算法 ---- */
   const FallDetect_Config_t config = {
-      .freefall_threshold = 70000000U,
-      .impact_threshold   = 1000000000U,
-      .still_low          = 130000000U,
-      .still_high         = 450000000U,
-      .impact_window_ms   = 800,
-      .still_time_ms      = 2000,
-      .impact_timeout_ms  = 5000,
-      .alarm_hold_ms      = 15000,   /* 报警后 15 秒不响应新跌倒 */
+      .freefall_threshold     = 70000000U,
+      .impact_threshold       = 1000000000U,
+      .still_low              = 130000000U,
+      .still_high             = 450000000U,
+      .impact_window_ms       = 800,
+      .still_time_ms          = 2000,
+      .impact_timeout_ms      = 5000,
+      .alarm_hold_ms          = 15000,   /* 报警后 15 秒不响应新跌倒 */
+      .gyro_thr  = 200000000U, /* 约108°/s等效角速度 */
   };
 
   FallDetect_Init(&config);
@@ -312,21 +303,19 @@ void fallTask(void *argument)
           input.accel_sq = (uint32_t)raw.ax_raw * raw.ax_raw
                          + (uint32_t)raw.ay_raw * raw.ay_raw
                          + (uint32_t)raw.az_raw * raw.az_raw;
-          input.timestamp_ms = osKernelGetTickCount();
   
-          input.gyro_x_dps = raw.gx_raw / 131.0f;  // ±250°/s 对应灵敏度 131 LSB/(°/s)
-          input.gyro_y_dps = raw.gy_raw / 131.0f;
-          input.gyro_z_dps = raw.gz_raw / 131.0f;
-          input.pitch = 0.0f;
-          input.roll  = 0.0f;
+          input.gyro_sq   = (uint32_t)raw.gx_raw * raw.gx_raw
+                          + (uint32_t)raw.gy_raw * raw.gy_raw
+                          + (uint32_t)raw.gz_raw * raw.gz_raw;
 
+          input.timestamp_ms = osKernelGetTickCount();
           /* ---- 调用跌倒算法 ---- */
-          IMUBuf_PushData(input.timestamp_ms, &raw, input.accel_sq);
+          IMUBuf_PushData(input.timestamp_ms, &raw, input.accel_sq, input.gyro_sq);
           event = FallDetect_Process(&input);
         
-            mag = isqrt(input.accel_sq);
-            g_int  = mag / 16384;
-            g_frac = ((mag % 16384) * 100) / 16384;
+          mag    = isqrt(input.accel_sq);
+          g_int  = mag / 16384;
+          g_frac = ((mag % 16384) * 100) / 16384;
           /* ---- 事件 → 动作 ---- */
           switch (event) 
           {
@@ -348,23 +337,30 @@ void fallTask(void *argument)
                   break;
           }
          
-          printf("  state=%d, g=%lu.%02lu\n",
-                 (int)FallDetect_GetState(), g_int, g_frac);
       }
   }
   /* USER CODE END fallTask */
 }
  void alarmTask(void *argument)
 {
+  FallEvent_Data_t event;
+
   /* USER CODE BEGIN alarmTask */
   for (;;)
   {
       osSemaphoreAcquire(alarmSemHandle, osWaitForever);
-      
+
       uint32_t time_start = osKernelGetTickCount();
       alarm_routine(time_start);
       FallDetect_Reset();
-      IMUBuf_DumpAll();
+      IMUBuf_GetPeak(&event);
+
+      /* 打包并打印帧内容（验证二进制帧格式） */
+      uint8_t notify_buf[COMM_NOTIFY_FRAME_LEN];
+      uint16_t len = Comm_PackNotify(notify_buf, &event);
+      dump_hex(notify_buf, len);
+
+      IMUBuf_Dump();
       IMUBuf_Reset();
   }
   /* USER CODE END alarmTask */

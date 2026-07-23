@@ -232,22 +232,32 @@ void I2C_WriteOneByte(uint8_t dev_addr, uint8_t reg_addr, uint8_t data)
  *
  * ACK = 继续读下一字节, NACK = 读完停止
  */
-void I2C_ReadBytes(uint8_t dev_addr, uint8_t reg_addr, uint8_t *buf, uint8_t len)
+uint8_t I2C_ReadBytes(uint8_t dev_addr, uint8_t reg_addr, uint8_t *buf, uint8_t len)
 {
     uint8_t i;
 
     I2C_Start();
 
     I2C_SendByte(dev_addr << 1);        // 设备地址 + 写位
-    I2C_WaitAck();
+    if(I2C_WaitAck() != 0)
+    {
+        return 1;
+    }
+    
 
     I2C_SendByte(reg_addr);              // 起始寄存器地址
-    I2C_WaitAck();
+     if(I2C_WaitAck() != 0)
+    {
+        return 1;
+    }
 
     I2C_Start();                          // 重复开始信号
 
     I2C_SendByte((dev_addr << 1) | 1);   // 设备地址 + 读位(bit0=1)
-    I2C_WaitAck();
+     if(I2C_WaitAck() != 0)
+    {
+        return 1;
+    }
 
     for (i = 0; i < len; i++)
     {
@@ -259,4 +269,6 @@ void I2C_ReadBytes(uint8_t dev_addr, uint8_t reg_addr, uint8_t *buf, uint8_t len
     }
 
     I2C_Stop();
+
+    return 0;
 }

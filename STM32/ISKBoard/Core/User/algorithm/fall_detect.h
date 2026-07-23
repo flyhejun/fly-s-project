@@ -44,18 +44,9 @@ typedef enum {
  *  算法输入
  * ================================================================ */
 typedef struct {
-    /* ---- 当前使用 ---- */
     uint32_t accel_sq;             /* 加速度平方和（ax²+ay²+az²） */
+    uint32_t gyro_sq;              /* 角速度平方和（gx²+gy²+gz²）  */
     uint32_t timestamp_ms;         /* 时间戳 (ms)                 */
-
-    /* ---- gyro 角速度 (°/s) ---- */
-    float    gyro_x_dps;           /* 绕 X 轴角速度               */
-    float    gyro_y_dps;           /* 绕 Y 轴角速度               */
-    float    gyro_z_dps;           /* 绕 Z 轴角速度               */
-
-    /* ---- 预留：姿态角 (deg) ---- */
-    float    pitch;                /* 俯仰角                      */
-    float    roll;                 /* 横滚角                      */
 } FallDetect_Input_t;
 
 /* ================================================================
@@ -70,6 +61,7 @@ typedef struct {
     uint32_t still_time_ms;        /* 冲击→静止 确认需持续多久   */
     uint32_t impact_timeout_ms;    /* IMPACT 全局超时保护         */
     uint32_t alarm_hold_ms;        /* 报警锁定期：跌倒确认后多长时间不响应新跌倒 */
+    uint32_t gyro_thr;           /* 冲击时角速度平方和下限 */
 } FallDetect_Config_t;
 
 /* ================================================================

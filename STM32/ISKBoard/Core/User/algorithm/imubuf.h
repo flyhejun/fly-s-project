@@ -30,8 +30,6 @@
  *  IMU 样本结构体
  * ================================================================ */
 typedef struct {
-    /* 元数据 */
-    uint32_t seq;                       /* 序列号（单调递增）     */
     uint32_t timestamp_ms;              /* 采样时间戳 (ms)       */
 
     /* 原始 ADC 值 */
@@ -43,24 +41,35 @@ typedef struct {
     int16_t  gz_raw;
 
     /* 预处理结果 */
-    uint32_t accel_sq;                  /* 加速度平方和           */
+    uint32_t accel_sq; 
+    uint32_t gyro_sq;                 
 } IMU_Sample_t;
 
+/* ================================================================
+ *  统一跌倒事件
+ * ================================================================ */
+typedef struct {
+    uint32_t timestamp_ms;       /* 事件发生时间戳 (ms)                     */
+    uint8_t  event_type;         /* 事件类型：0=跌倒确认（预留扩展）         */
+
+    uint32_t max_accel_sq;       /* 冲击阶段加速度峰值                      */
+    uint32_t freefall_min_sq;    /* 失重阶段加速度谷值                      */
+
+    const IMU_Sample_t *samples; /* 指向环形缓冲区，零拷贝                   */
+} FallEvent_Data_t;
 /* ================================================================
  *  API
  * ================================================================ */
 
 void IMUBuf_Init(void);
 
-void IMUBuf_PushData(uint32_t timestamp_ms,
-                     const MPU6050_RawData_t *raw,
-                     uint32_t accel_sq);
-
-void IMUBuf_Push(const IMU_Sample_t *sample);
+void IMUBuf_PushData(uint32_t timestamp_ms, const MPU_Raw_t *raw, uint32_t accel_sq, uint32_t gyro_sq);
 
 void IMUBuf_Trigger(uint8_t event_id);
 
-void IMUBuf_DumpAll(void);
+void IMUBuf_Dump(void);
+
+void IMUBuf_GetPeak(FallEvent_Data_t *event);
 
 void IMUBuf_Reset(void);
 

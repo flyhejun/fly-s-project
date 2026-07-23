@@ -32,6 +32,6 @@ uint8_t I2C_ReadByte(uint8_t ack);
 /* I2C 通用操作（封装了设备地址+寄存器地址的完整时序） */
 void I2C_WriteOneByte(uint8_t dev_addr, uint8_t reg_addr, uint8_t data);
 
-void I2C_ReadBytes(uint8_t dev_addr, uint8_t reg_addr, uint8_t *buf, uint8_t len);
+uint8_t I2C_ReadBytes(uint8_t dev_addr, uint8_t reg_addr, uint8_t *buf, uint8_t len);
 
 #endif
