@@ -1,9 +1,16 @@
 # ISKBoard 树莓派网关 Makefile
-# 依赖：sudo apt install libglib2.0-dev libmosquitto-dev libcjson-dev
+# 依赖：sudo apt install libglib2.0-dev
+#       cjson 和 mosquitto 已自带在 third_party/ 中
 
 CC       = gcc
-CFLAGS   = -Wall -Wextra -O2 -Isrc -Iinclude $(shell pkg-config --cflags gio-2.0)
-LDFLAGS  = -lmosquitto -lcjson $(shell pkg-config --libs gio-2.0) -lpthread
+CFLAGS   = -Wall -Wextra -O2 -Isrc -Iinclude \
+           -Ithird_party/cjson/include -Ithird_party/cjson/include/cjson \
+           -Ithird_party/mosquitto/include \
+           $(shell pkg-config --cflags gio-2.0)
+
+LDFLAGS  = third_party/cjson/lib/libcjson.a \
+           third_party/mosquitto/lib/libmosquitto.a \
+           $(shell pkg-config --libs gio-2.0) -lpthread
 
 TARGET   = isk_gateway
 
