@@ -3,7 +3,7 @@
 #       cjson 和 mosquitto 已自带在 third_party/ 中
 
 CC       = gcc
-CFLAGS   = -Wall -Wextra -O2 -Isrc -Iinclude \
+CFLAGS   = -Wall -Wextra -Wno-unused-parameter -O2 -Isrc -Iinclude \
            -Ithird_party/cjson/include -Ithird_party/cjson/include/cjson \
            -Ithird_party/mosquitto/include \
            $(shell pkg-config --cflags gio-2.0)

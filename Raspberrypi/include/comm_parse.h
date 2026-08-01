@@ -12,6 +12,7 @@
 #ifndef COMM_PARSE_H
 #define COMM_PARSE_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 /* ---- 帧常量（与 STM32 一致） ---- */
