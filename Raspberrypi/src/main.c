@@ -149,7 +149,7 @@ int main(void)
     }
     LOG_INFO("System Bus 连接成功");
 
-    /* 3. BLE 扫描（ESP32 Notify） */
+    /* 3. BLE 广播接收（ESP32 广播包 → ManufacturerData → 帧） */
     ble_start(conn);
 
     /* 4. 主循环 */

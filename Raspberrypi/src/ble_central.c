@@ -1,418 +1,339 @@
+/**
+  ******************************************************************************
+  * @file    ble_central.c
+  * @brief   BLE 广播接收 — 从 ESP32 广播包 ManufacturerData 中提取帧
+  *
+  * 工作方式（纯扫描，不连接）：
+  *   1. 启动 BLE 扫描（StartDiscovery）
+  *   2. 发现设备 → 读 ManufacturerData → 解析帧 → MQTT
+  *   3. 订阅 PropertiesChanged → 每次 ESP32 更新广播数据，立即收到新帧
+  *
+  * 注意：ESP32 需要把帧数据写入 BLE 广播包 Manufacturer Specific Data 字段。
+  ******************************************************************************
+  */
 #include <gio/gio.h>
 #include <stdio.h>
 #include "comm_parse.h"
 #include "mqtt_publish.h"
 #include "log.h"
 
-/* MQTT 实例（main.c 初始化后赋值，Notify 回调中使用） */
+/* MQTT 实例（main.c 中初始化） */
 extern struct mosquitto *g_mosq;
 
 #define TARGET_MAC "58:8c:81:0e:4e:16"
 
-#define TARGET_CHAR_UUID "0000a003-0000-1000-8000-00805f9b34fb"
+/* ================================================================
+ *  内部辅助
+ * ================================================================ */
 
-static char *g_device_path = NULL;
-
-static void handle_notify_data(const guint8 *data, gsize len)
+/**
+  * @brief  从设备属性中读取 ManufacturerData 并尝试解析帧
+  *
+  * BlueZ 把广播包中的 Manufacturer Specific Data（AD type 0xFF）
+  * 映射为 Device1 接口的 ManufacturerData 属性，类型 a{qv}：
+  *   - key:  uint16 厂商 ID
+  *   - value: variant → byte array（即原始帧数据）
+  */
+static void process_advertising_data(GVariant *props)
 {
-	ParsedFrame_t frame;
+    GVariant    *mfg_data;
+    GVariantIter iter;
+    guint16      mfg_id;
+    GVariant    *value;
 
-	if (comm_parse_frame(data, len, &frame))
-	{
-		LOG_INFO("[BLE] 收到帧 type=%02X, date=%04u-%02u-%02u %02u:%02u",
-		         frame.type, frame.date.year, frame.date.month,
-		         frame.date.day, frame.date.hour, frame.date.minute);
+    mfg_data = g_variant_lookup_value(props, "ManufacturerData",
+                                      G_VARIANT_TYPE("a{qv}"));
+    if (mfg_data == NULL)
+        return;
 
-		if (g_mosq)
-			mqtt_publish_frame(g_mosq, &frame);
-	}
-	else
-	{
-		LOG_INFO("[BLE] 未识别的数据: %.*s", (int)len, (const char *)data);
-	}
+    g_variant_iter_init(&iter, mfg_data);
+
+    while (g_variant_iter_next(&iter, "{qv}", &mfg_id, &value))
+    {
+        gsize        len;
+        const guint8 *data;
+        ParsedFrame_t frame;
+
+        data = g_variant_get_fixed_array(value, &len, sizeof(guint8));
+
+        LOG_INFO("[ADV] mfg_id=0x%04X, len=%zu", mfg_id, len);
+
+        if (comm_parse_frame(data, len, &frame))
+        {
+            LOG_INFO("[ADV] 解析帧成功 type=%02X", frame.type);
+
+            if (g_mosq)
+                mqtt_publish_frame(g_mosq, &frame);
+        }
+        else
+        {
+            LOG_INFO("[ADV] 未识别的数据：%zu 字节", len);
+        }
+
+        g_variant_unref(value);
+    }
+
+    g_variant_unref(mfg_data);
 }
 
-static void on_char_properties_changed(GDBusConnection *connection,
-					const gchar *sender_name,
-					const gchar *object_path,
-					const gchar *interface_name,
-					const gchar *signal_name,
-					GVariant *parameters,
-					gpointer user_data)
-{
-	const gchar *iface;
-	GVariant *changed_props;
-	GVariant *invalidated_props;
+/* ================================================================
+ *  D-Bus 信号回调
+ * ================================================================ */
 
-	g_variant_get(parameters, "(&s@a{sv}@as)", &iface, &changed_props, &invalidated_props);
-
-	if (g_strcmp0(iface, "org.bluez.GattCharacteristic1") == 0)
-	{
-		GVariant *value = g_variant_lookup_value(changed_props, "Value",
-							G_VARIANT_TYPE("ay"));
-		if (value)
-		{
-			gsize len;
-			const guint8 *data = g_variant_get_fixed_array(value, &len,
-									sizeof(guint8));
-			handle_notify_data(data, len);
-			g_variant_unref(value);
-		}
-	}
-
-	g_variant_unref(changed_props);
-	g_variant_unref(invalidated_props);
-}
-
-static void start_notify(GDBusConnection *conn, const gchar *char_path)
-{
-	GError *error = NULL;
-
-	GDBusProxy *char_proxy = g_dbus_proxy_new_sync(conn, G_DBUS_PROXY_FLAGS_NONE, NULL,
-						"org.bluez", char_path,
-						"org.bluez.GattCharacteristic1", NULL,
-						&error);
-
-	if (error)
-	{
-		LOG_ERROR("创建特征值代理失败: %s", error->message);
-		g_error_free(error);
-		return;
-	}
-
-	g_dbus_connection_signal_subscribe(conn, "org.bluez",
-				      "org.freedesktop.DBus.Properties","PropertiesChanged",
-					char_path, NULL, G_DBUS_SIGNAL_FLAGS_NONE,
-					on_char_properties_changed, NULL, NULL);
-
-	GVariant *result = g_dbus_proxy_call_sync(char_proxy, "StartNotify", NULL,
-						  G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
-
-	if (error)
-	{
-		LOG_ERROR("StartNotify 失败: %s", error->message);
-		g_error_free(error);
-	}
-	else
-	{
-		LOG_INFO("已订阅 Notify: %s", char_path);
-		g_variant_unref(result);
-	}
-}
-
-static void find_target_characteristic(GDBusConnection *conn)
-{
-	GError *error = NULL;
-	GDBusProxy *om_proxy = g_dbus_proxy_new_sync(conn, G_DBUS_PROXY_FLAGS_NONE, NULL,
-						     "org.bluez", "/",
-						     "org.freedesktop.DBus.ObjectManager",
-						     NULL, &error);
-	if (error)
-	{
-		LOG_ERROR("创建 ObjectManager 代理失败: %s", error->message);
-		g_error_free(error);
-		return;
-	}
-
-	GVariant *result = g_dbus_proxy_call_sync(om_proxy, "GetManagedObjects", NULL,
-						  G_DBUS_CALL_FLAGS_NONE, -1,
-						  NULL, &error);
-	g_object_unref(om_proxy);
-
-	if (error)
-	{
-		LOG_ERROR("GetManagedObjects 失败: %s", error->message);
-		g_error_free(error);
-		return;
-	}
-
-	GVariantIter *objects_iter;
-	g_variant_get(result, "(a{oa{sa{sv}}})", &objects_iter);
-
-	gchar        *obj_path;
-	GVariantIter *interfaces_iter;
-	gboolean     found = FALSE;
-
-	while (g_variant_iter_loop(objects_iter, "{oa{sa{sv}}}", &obj_path, &interfaces_iter))
-	{
-		gchar *iface_name;
-		GVariant *props;
-
-		while (g_variant_iter_loop(interfaces_iter, "{s@a{sv}}", &iface_name, &props))
-		{
-			if (g_strcmp0(iface_name, "org.bluez.GattCharacteristic1") == 0 &&
-			    g_device_path != NULL && g_str_has_prefix(obj_path, g_device_path))
-			{
-				GVariant *uuid_variant = g_variant_lookup_value(props, "UUID",
-									G_VARIANT_TYPE_STRING);
-				if (uuid_variant)
-				{
-					const gchar *uuid = g_variant_get_string(uuid_variant, NULL);
-					if (g_strcmp0(uuid, TARGET_CHAR_UUID) == 0)
-					{
-						LOG_INFO("找到目标特征值: %s", obj_path);
-						start_notify(conn, obj_path);
-						found = TRUE;
-					}
-
-					g_variant_unref(uuid_variant);
-				}
-			}
-		}
-		if (found) break;
-	}
-
-	g_variant_iter_free(objects_iter);
-	g_variant_unref(result);
-
-	if (!found)
-	{
-		LOG_WARN("没找到 UUID=%s 的特征值", TARGET_CHAR_UUID);
-	}
-}
-
-
+/**
+  * @brief  设备属性变化回调
+  *
+  * ESP32 每次更新广播数据（停止→重发），BlueZ 会更新 Device1 的
+  * ManufacturerData / RSSI 等属性，触发 PropertiesChanged。
+  */
 static void on_device_properties_changed(GDBusConnection *connection,
-					const gchar *sender_name,
-					const gchar *object_path,
-					const gchar *interface_name,
-					const gchar *signal_name,
-					GVariant *parameters,
-					gpointer user_data)
+                                          const gchar      *sender_name,
+                                          const gchar      *object_path,
+                                          const gchar      *interface_name,
+                                          const gchar      *signal_name,
+                                          GVariant         *parameters,
+                                          gpointer          user_data)
 {
-	const gchar *iface;
-	GVariant *changed_props;
-	GVariant *invalidated_props;
+    const gchar *iface;
+    GVariant    *changed_props;
+    GVariant    *invalidated_props;
 
-	g_variant_get(parameters, "(&s@a{sv}@as)", &iface, &changed_props, &invalidated_props);
+    (void)connection;
+    (void)sender_name;
+    (void)object_path;
+    (void)signal_name;
+    (void)user_data;
 
-	if (g_strcmp0(iface, "org.bluez.Device1") == 0)
-	{
-		GVariant *resolved = g_variant_lookup_value(changed_props, "ServicesResolved",
-							    G_VARIANT_TYPE_BOOLEAN);
-		if (resolved)
-		{
-			if (g_variant_get_boolean(resolved))
-			{
-				LOG_INFO("服务发现完成，开始查找特征值");
-				find_target_characteristic(connection);
-			}
+    g_variant_get(parameters, "(&s@a{sv}@as)",
+                  &iface, &changed_props, &invalidated_props);
 
-			g_variant_unref(resolved);
-		}
-	}
+    if (g_strcmp0(iface, "org.bluez.Device1") == 0)
+    {
+        process_advertising_data(changed_props);
+    }
 
-	g_variant_unref(changed_props);
-	g_variant_unref(invalidated_props);
+    g_variant_unref(changed_props);
+    g_variant_unref(invalidated_props);
 }
 
-static void connect_to_device(GDBusConnection *conn, const gchar *device_path)
+/**
+  * @brief  订阅目标设备的广播数据更新
+  */
+static void watch_device(GDBusConnection *conn, const gchar *device_path)
 {
-	GError *error = NULL;
-	g_device_path = g_strdup(device_path);
+    g_dbus_connection_signal_subscribe(
+        conn,
+        "org.bluez",
+        "org.freedesktop.DBus.Properties",
+        "PropertiesChanged",
+        device_path,
+        NULL,
+        G_DBUS_SIGNAL_FLAGS_NONE,
+        on_device_properties_changed,
+        NULL,
+        NULL);
 
-	GDBusProxy *dev_proxy = g_dbus_proxy_new_sync(
-				conn, G_DBUS_PROXY_FLAGS_NONE,
-				NULL, "org.bluez",
-				device_path, "org.bluez.Device1",
-				NULL, &error);
-
-	if (error)
-	{
-		LOG_ERROR("创建设备代理失败: %s", error->message);
-		g_error_free(error);
-		return;
-	}
-
-	g_dbus_connection_signal_subscribe(conn, "org.bluez","org.freedesktop.DBus.Properties",
-					   "PropertiesChanged", device_path,
-					   NULL, G_DBUS_SIGNAL_FLAGS_NONE,
-					   on_device_properties_changed, NULL, NULL);
-
-	GVariant *result = g_dbus_proxy_call_sync(
-			dev_proxy, "Connect",
-			NULL, G_DBUS_CALL_FLAGS_NONE,
-			15000, NULL, &error);
-
-	if (error)
-	{
-		LOG_ERROR("Connect 失败: %s", error->message);
-		g_error_free(error);
-	}
-	else
-	{
-		LOG_INFO("Connect() 调用成功");
-		g_variant_unref(result);
-	}
-
-	g_object_unref(dev_proxy);
+    LOG_INFO("已监听广播数据: %s", device_path);
 }
 
+/* ================================================================
+ *  设备发现
+ * ================================================================ */
+
+/**
+  * @brief  扫描结果回调：新设备出现
+  */
+static void on_interfaces_added(GDBusConnection *connection,
+                                 const gchar      *sender_name,
+                                 const gchar      *object_path,
+                                 const gchar      *interface_name,
+                                 const gchar      *signal_name,
+                                 GVariant         *parameters,
+                                 gpointer          user_data)
+{
+    const gchar *obj_path;
+    GVariant    *interfaces;
+
+    (void)sender_name;
+    (void)interface_name;
+    (void)signal_name;
+    (void)user_data;
+
+    g_variant_get(parameters, "(&o@a{sa{sv}})", &obj_path, &interfaces);
+
+    GVariantIter iter;
+    gchar       *iface_name;
+    GVariant    *props;
+
+    g_variant_iter_init(&iter, interfaces);
+
+    while (g_variant_iter_loop(&iter, "{s@a{sv}}", &iface_name, &props))
+    {
+        if (g_strcmp0(iface_name, "org.bluez.Device1") == 0)
+        {
+            GVariant *addr_variant = g_variant_lookup_value(
+                        props, "Address", G_VARIANT_TYPE_STRING);
+
+            if (addr_variant)
+            {
+                const gchar *addr = g_variant_get_string(addr_variant, NULL);
+                LOG_INFO("发现设备: %s (%s)", addr, obj_path);
+
+                if (g_ascii_strcasecmp(addr, TARGET_MAC) == 0)
+                {
+                    LOG_INFO("找到 ESP32，开始接收广播数据");
+                    process_advertising_data(props);
+                    watch_device(connection, obj_path);
+                }
+
+                g_variant_unref(addr_variant);
+            }
+        }
+    }
+
+    g_variant_unref(interfaces);
+}
+
+/**
+  * @brief  检查 BlueZ 已缓存的设备
+  * @retval TRUE  找到并开始监听
+  *         FALSE 未找到
+  */
 static gboolean check_existing_devices(GDBusConnection *conn)
 {
-	GError *error = NULL;
+    GError *error = NULL;
 
-	GDBusProxy *om_proxy = g_dbus_proxy_new_sync(
-			conn, G_DBUS_PROXY_FLAGS_NONE,
-			NULL, "org.bluez",
-			"/", "org.freedesktop.DBus.ObjectManager",
-			NULL, &error);
+    GDBusProxy *om_proxy = g_dbus_proxy_new_sync(
+                conn, G_DBUS_PROXY_FLAGS_NONE,
+                NULL, "org.bluez",
+                "/", "org.freedesktop.DBus.ObjectManager",
+                NULL, &error);
 
-	if (error)
-	{
-		LOG_ERROR("创建 ObjectManager 代理失败: %s", error->message);
-		g_error_free(error);
-		return FALSE;
-	}
+    if (error)
+    {
+        LOG_ERROR("ObjectManager 代理失败: %s", error->message);
+        g_error_free(error);
+        return FALSE;
+    }
 
-	GVariant *result = g_dbus_proxy_call_sync(
-			om_proxy, "GetManagedObjects",
-			NULL, G_DBUS_CALL_FLAGS_NONE,
-			-1, NULL, &error);
+    GVariant *result = g_dbus_proxy_call_sync(
+                om_proxy, "GetManagedObjects",
+                NULL, G_DBUS_CALL_FLAGS_NONE,
+                -1, NULL, &error);
 
-	g_object_unref(om_proxy);
+    g_object_unref(om_proxy);
 
-	if (error)
-	{
-		LOG_ERROR("GetManagedObjects 失败: %s", error->message);
-		g_error_free(error);
-		return FALSE;
-	}
+    if (error)
+    {
+        LOG_ERROR("GetManagedObjects 失败: %s", error->message);
+        g_error_free(error);
+        return FALSE;
+    }
 
-	GVariantIter *objects_iter;
-	g_variant_get(result, "(a{oa{sa{sv}}})", &objects_iter);
+    GVariantIter *objects_iter;
+    g_variant_get(result, "(a{oa{sa{sv}}})", &objects_iter);
 
-	gchar *obj_path;
-	GVariantIter *interfaces_iter;
-	gboolean found = FALSE;
+    gchar       *obj_path;
+    GVariantIter *interfaces_iter;
+    gboolean     found = FALSE;
 
-	while (g_variant_iter_loop(objects_iter, "{oa{sa{sv}}}", &obj_path, &interfaces_iter))
-	{
-		gchar *iface_name;
-		GVariant* props;
+    while (g_variant_iter_loop(objects_iter, "{oa{sa{sv}}}",
+                               &obj_path, &interfaces_iter))
+    {
+        gchar    *iface_name;
+        GVariant *props;
 
-		while (g_variant_iter_loop(interfaces_iter, "{s@a{sv}}", &iface_name, &props))
-		{
-			if (g_strcmp0(iface_name, "org.bluez.Device1") == 0)
-			{
-				GVariant *addr_variant = g_variant_lookup_value(props, "Address", G_VARIANT_TYPE_STRING);
-				if (addr_variant)
-				{
-					const gchar *addr = g_variant_get_string(addr_variant, NULL);
-					LOG_INFO("已知设备: %s (%s)", addr, obj_path);
+        while (g_variant_iter_loop(interfaces_iter, "{s@a{sv}}",
+                                   &iface_name, &props))
+        {
+            if (g_strcmp0(iface_name, "org.bluez.Device1") == 0)
+            {
+                GVariant *addr_variant = g_variant_lookup_value(
+                            props, "Address", G_VARIANT_TYPE_STRING);
 
-					if (g_ascii_strcasecmp(addr, TARGET_MAC) == 0)
-					{
-						LOG_INFO("在已知设备中找到目标，开始连接: %s", obj_path);
-						connect_to_device(conn, obj_path);
-						found = TRUE;
-					}
+                if (addr_variant)
+                {
+                    const gchar *addr = g_variant_get_string(addr_variant, NULL);
 
-					g_variant_unref(addr_variant);
-				}
-			}
-		}
-		if (found) break;
-	}
+                    if (g_ascii_strcasecmp(addr, TARGET_MAC) == 0)
+                    {
+                        LOG_INFO("在缓存中找到目标: %s", obj_path);
+                        process_advertising_data(props);
+                        watch_device(conn, obj_path);
+                        found = TRUE;
+                    }
 
-	g_variant_iter_free(objects_iter);
-	g_variant_unref(result);
+                    g_variant_unref(addr_variant);
+                }
+            }
+        }
 
-	return found;
+        if (found) break;
+    }
+
+    g_variant_iter_free(objects_iter);
+    g_variant_unref(result);
+
+    return found;
 }
 
-static void on_interfaces_added(GDBusConnection *connection, const gchar *sender_name,
-				const gchar *object_path, const gchar *interface_name,
-				const gchar *signal_name, GVariant *parameters,
-				gpointer user_data)
-{
-	const gchar *obj_path;
-	GVariant *interfaces;
+/* ================================================================
+ *  公开 API
+ * ================================================================ */
 
-	g_variant_get(parameters, "(&o@a{sa{sv}})", &obj_path, &interfaces);
-
-	GVariantIter iter;
-	gchar *iface_name;
-	GVariant *props;
-	g_variant_iter_init(&iter, interfaces);
-
-	while (g_variant_iter_loop(&iter, "{s@a{sv}}", &iface_name, &props))
-	{
-		if (g_strcmp0(iface_name, "org.bluez.Device1") == 0)
-		{
-			GVariant *addr_variant = g_variant_lookup_value(props, "Address", G_VARIANT_TYPE_STRING);
-			if (addr_variant)
-			{
-				const gchar *addr = g_variant_get_string(addr_variant, NULL);
-				LOG_INFO("发现设备: %s (%s)", addr, obj_path);
-
-				if (g_ascii_strcasecmp(addr, TARGET_MAC) == 0)
-				{
-					LOG_INFO("找到目标设备，准备连接: %s", obj_path);
-					connect_to_device(connection, obj_path);
-				}
-
-				g_variant_unref(addr_variant);
-			}
-		}
-	}
-
-	g_variant_unref(interfaces);
-}
-
+/**
+  * @brief  启动 BLE 广播接收
+  *
+  * 只扫描、不连接。数据通过广播包的 ManufacturerData 获取。
+  */
 void ble_start(GDBusConnection *conn)
 {
-	GError *error = NULL;
+    GError *error = NULL;
 
-	GDBusProxy *adapter = g_dbus_proxy_new_sync(
-			conn,
-			G_DBUS_PROXY_FLAGS_NONE,
-			NULL,
-			"org.bluez",
-			"/org/bluez/hci0",
-			"org.bluez.Adapter1",
-			NULL,
-			&error);
+    /* 1. 获取适配器代理 */
+    GDBusProxy *adapter = g_dbus_proxy_new_sync(
+                conn, G_DBUS_PROXY_FLAGS_NONE,
+                NULL, "org.bluez",
+                "/org/bluez/hci0",
+                "org.bluez.Adapter1",
+                NULL, &error);
 
-	if (error)
-	{
-		LOG_ERROR("创建适配器代理失败: %s", error->message);
-		g_error_free(error);
-		return;
-	}
-	LOG_INFO("适配器代理创建成功");
+    if (error)
+    {
+        LOG_ERROR("创建适配器代理失败: %s", error->message);
+        g_error_free(error);
+        return;
+    }
+    LOG_INFO("BLE 适配器就绪");
 
-	g_dbus_connection_signal_subscribe(
-			conn,
-			"org.bluez",
-			"org.freedesktop.DBus.ObjectManager",
-			"InterfacesAdded",
-			NULL,
-			NULL,
-			G_DBUS_SIGNAL_FLAGS_NONE,
-			on_interfaces_added,
-			NULL,
-			NULL);
+    /* 2. 监听新设备出现 */
+    g_dbus_connection_signal_subscribe(
+        conn,
+        "org.bluez",
+        "org.freedesktop.DBus.ObjectManager",
+        "InterfacesAdded",
+        NULL, NULL,
+        G_DBUS_SIGNAL_FLAGS_NONE,
+        on_interfaces_added, NULL, NULL);
 
-	GVariant *result = g_dbus_proxy_call_sync(
-			adapter,
-			"StartDiscovery",
-			NULL,
-			G_DBUS_CALL_FLAGS_NONE,
-			-1,
-			NULL,
-			&error);
+    /* 3. 启动扫描 */
+    GVariant *result = g_dbus_proxy_call_sync(
+                adapter, "StartDiscovery",
+                NULL, G_DBUS_CALL_FLAGS_NONE,
+                -1, NULL, &error);
 
-	if (error)
-	{
-		LOG_ERROR("StartDiscovery 失败: %s", error->message);
-		g_error_free(error);
-		return;
-	}
-	LOG_INFO("开始扫描");
+    if (error)
+    {
+        LOG_ERROR("StartDiscovery 失败: %s", error->message);
+        g_error_free(error);
+        g_object_unref(adapter);
+        return;
+    }
+    LOG_INFO("BLE 扫描已启动（纯广播模式）");
 
-	check_existing_devices(conn);
+    /* 4. 检查已知设备（防止 ESP32 在 Pi 启动前已经在广播） */
+    check_existing_devices(conn);
 
-	g_variant_unref(result);
-	g_object_unref(adapter);
+    g_variant_unref(result);
+    g_object_unref(adapter);
 }

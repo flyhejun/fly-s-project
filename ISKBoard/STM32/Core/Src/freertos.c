@@ -443,7 +443,6 @@ void commTask(void *argument)
         }
     }
 
-    ESP32_CheckPending();
   }
   /* USER CODE END commTask */
 }

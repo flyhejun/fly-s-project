@@ -10,12 +10,6 @@
 #include <string.h>
 #include <stdio.h>
 
-volatile uint8_t g_ble_connected = 0;
-
-static uint8_t  pending_buf[64];
-static uint16_t pending_len;
-static uint8_t  has_pending;
-
 static char    rx_line[64];
 static uint8_t rx_pos;
 
@@ -33,8 +27,6 @@ static uint16_t rx_frame_ring_len[RX_FRAME_RING_SIZE];
 static volatile uint8_t rx_frame_head;      /* 写索引（中断） */
 static volatile uint8_t rx_frame_tail;      /* 读索引（任务） */
 
-static void parse_ble_status(const char *line); //蓝牙连接状态查询
-
 /* 统一发送入口：固定 100ms 超时 */
 static int uart2_send(const uint8_t *buf, uint16_t len)
 {
@@ -42,41 +34,60 @@ static int uart2_send(const uint8_t *buf, uint16_t len)
 }
 
 /* ================================================================
- *  ESP32_Send — 发数据帧
- *  已连接 → 直接发，最多 3 次重试；失败或断开 → 暂存 pending
+ *  ESP32_Send — 发数据帧（通过 AT+BLEADVDATA 更新广播包）
+ *
+ *  数据包装格式（BLE AD Structure）：
+ *    [Flags: 02 01 06] [MfgData: len FF FF FF] [帧数据 SOF...EOF]
+ *    ── 3B ──────────   ── 4B ──────────────   ── 7~21B ─────
+ *
+ *  最长帧 21B + 7B 开销 = 28B，HEX 编码后 56 字符，符合 31 字节限制。
+ *  采用 Fire & Forget 模式（不等待 OK），保证 10Hz 实时数据吞吐。
  * ================================================================ */
 void ESP32_Send(const uint8_t *buf, uint16_t len)
 {
-    uint8_t retry = 3;
+    uint8_t ad[64];         /* AD Structure 构建缓冲 */
+    uint8_t ad_len = 0;
+    char    cmd[128];       /* AT+BLEADVDATA="hex..."\r\n */
+    int     hex_pos;
+    int     i;
 
-    if (g_ble_connected)
+    /* ---- 1. 构建 BLE AD Structure ---- */
+
+    /* Flags AD: LE General Discoverable, BR/EDR not supported */
+    ad[ad_len++] = 0x02;   /* 长度 */
+    ad[ad_len++] = 0x01;   /* AD Type: Flags */
+    ad[ad_len++] = 0x06;   /* LE General Discoverable */
+
+    /* Manufacturer Data AD（含帧数据） */
+    ad[ad_len++] = len + 3;      /* 长度 = 1(type) + 2(mfg_id) + len */
+    ad[ad_len++] = 0xFF;         /* AD Type: Manufacturer Specific Data */
+    ad[ad_len++] = 0xFF;         /* Company ID low  (0xFFFF = 测试用) */
+    ad[ad_len++] = 0xFF;         /* Company ID high */
+    memcpy(&ad[ad_len], buf, len);
+    ad_len += len;
+
+    /* ---- 2. 生成 AT 命令 ---- */
+    memcpy(cmd, "AT+BLEADVDATA=\"", 16);
+    hex_pos = 16;
+
+    for (i = 0; i < ad_len; i++)
     {
-        while (retry--)
-            if (uart2_send(buf, len) == HAL_OK)
-                return;
+        cmd[hex_pos++] = "0123456789ABCDEF"[ad[i] >> 4];
+        cmd[hex_pos++] = "0123456789ABCDEF"[ad[i] & 0x0F];
     }
+    cmd[hex_pos++] = '\"';
+    cmd[hex_pos++] = '\r';
+    cmd[hex_pos++] = '\n';
 
-    memcpy(pending_buf, buf, len);
-    pending_len = len;
-    has_pending = 1;
-}
-
-/* ================================================================
- *  ESP32_CheckPending — 重连后补发
- * ================================================================ */
-void ESP32_CheckPending(void)
-{
-    if (has_pending && uart2_send(pending_buf, pending_len) == HAL_OK)
-    {
-        has_pending = 0;
-    }
+    /* ---- 3. 发送（Fire & Forget） ---- */
+    uart2_send((uint8_t *)cmd, hex_pos);
 }
 
 /* ================================================================
  *  ESP32_RX_Char — UART2 RX 中断逐字喂入
  *
  *  双模式状态机：
- *    行模式  默认，按 \n 分行 → parse_ble_status（+BLECONN）
+ *    行模式  默认，丢弃非帧数据（ESP32 启动信息 / AT 响应）
  *    帧模式  检测到 SOF(0xAA) 进入，按 LEN 计算帧长接收下行指令帧
  * ================================================================ */
 void ESP32_RX_Char(uint8_t ch)
@@ -128,14 +139,9 @@ void ESP32_RX_Char(uint8_t ch)
     }
     else
     {
-        /* ---- 行模式：解析 +BLECONN / +BLEDISCONN ---- */
+        /* ---- 行模式：丢弃非帧数据（ESP32 启动信息等） ---- */
         if (ch == '\n' || ch == '\r')
         {
-            if (rx_pos > 0)
-            {
-                rx_line[rx_pos] = '\0';
-                parse_ble_status(rx_line);
-            }
             rx_pos = 0;
         }
         else if (rx_pos < sizeof(rx_line) - 1)
@@ -159,17 +165,6 @@ uint8_t ESP32_RX_GetFrame(uint8_t *buf, uint16_t *len)
 
     rx_frame_tail = (uint8_t)((rx_frame_tail + 1) % RX_FRAME_RING_SIZE);
     return 1;
-}
-
-/* ================================================================
- *  parse_ble_status — 解析 +BLECONN / +BLEDISCONN
- * ================================================================ */
-static void parse_ble_status(const char *line)
-{
-    if (strstr(line, "+BLECONN"))
-        g_ble_connected = 1;
-    else if (strstr(line, "+BLEDISCONN"))
-        g_ble_connected = 0;
 }
 
 /* ================================================================
@@ -305,14 +300,13 @@ done:
 
 /* ---- AT 命令序列 ---- */
 
-/* BLE 初始化 AT 命令链表 */
+/* BLE 初始化 AT 命令链表（广播模式，无需 GATT） */
 static const char *at_sequence[] = {
-    "AT",                    /* 测试 ESP32 是否在线           */
-    "AT+BLEINIT=2",          /* 初始化为 BLE GATT Server     */
-    "AT+BLENAME=FallSensor", /* 设置 BLE 广播名              */
-    "AT+BLEGATTSSRVCRE",     /* 创建 GATT Service            */
-    "AT+BLEGATTSSRVSTART",   /* 启动 GATT Service            */
-    "AT+BLEADVSTART",        /* 开始 BLE 广播                */
+    "AT",                        /* 测试 ESP32 是否在线       */
+    "AT+BLEINIT=2",              /* 初始化为 BLE Server       */
+    "AT+BLENAME=FallSensor",     /* 设置 BLE 广播名           */
+    "AT+BLEADVPARAM=160,160,0,0,7",  /* 广播参数（100ms间隔）*/
+    "AT+BLEADVSTART",            /* 开始 BLE 广播             */
 };
 
 #define AT_CMD_COUNT  (sizeof(at_sequence) / sizeof(at_sequence[0]))

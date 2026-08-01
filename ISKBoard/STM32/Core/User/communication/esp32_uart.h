@@ -16,10 +16,7 @@ typedef enum {
     BLE_INIT_FAIL,      /* 某条命令超时或返回 ERROR */
 } BLE_Init_Status_t;
 
-extern volatile uint8_t g_ble_connected;
-
 void ESP32_Send(const uint8_t *buf, uint16_t len);
-void ESP32_CheckPending(void);
 void ESP32_RX_Char(uint8_t ch);
 BLE_Init_Status_t ESP32_Init_BLE(void);
 
