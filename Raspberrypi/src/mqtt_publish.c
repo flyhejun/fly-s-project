@@ -20,7 +20,7 @@ int mqtt_publish_frame(struct mosquitto *mosq, const ParsedFrame_t *frame)
 {
     cJSON *root;
     char  *payload;
-    char   date_str[20];
+    char   date_str[24];
     const char *topic;
     int    rc;
 
