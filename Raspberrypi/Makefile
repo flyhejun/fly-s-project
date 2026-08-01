@@ -2,8 +2,8 @@
 # 依赖：sudo apt install libglib2.0-dev libmosquitto-dev libcjson-dev
 
 CC       = gcc
-CFLAGS   = -Wall -Wextra -O2 -Isrc -Iinclude
-LDFLAGS  = -lmosquitto -lcjson -lglib-2.0 -lgio-2.0 -lgobject-2.0 -lpthread
+CFLAGS   = -Wall -Wextra -O2 -Isrc -Iinclude $(shell pkg-config --cflags gio-2.0)
+LDFLAGS  = -lmosquitto -lcjson $(shell pkg-config --libs gio-2.0) -lpthread
 
 TARGET   = isk_gateway
 

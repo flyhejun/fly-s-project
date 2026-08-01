@@ -120,7 +120,7 @@ int main(void)
     GMainLoop       *loop;
 
     /* 初始化日志 */
-    log_init("/var/log/isk_gateway.log");
+    log_init("./isk_gateway.log");
     LOG_INFO("ISKBoard 网关启动");
 
     /* 1. MQTT：创建失败才退出（内存不足），连接失败后台重试 */
