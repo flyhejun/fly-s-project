@@ -16,13 +16,21 @@ uint32_t isqrt(uint32_t n)
     uint32_t lo, hi, mid;
 
     if (n == 0) return 0;
+
     lo = 1;
     hi = 65535;
+
     while (lo <= hi)
     {
         mid = (lo + hi) / 2;
-        if (mid * mid <= n) lo = mid + 1;
-        else                 hi = mid - 1;
+        if (mid * mid <= n) 
+        {
+            lo = mid + 1;
+        }
+        else                
+        {
+             hi = mid - 1;
+        }
     }
     return hi;
 }

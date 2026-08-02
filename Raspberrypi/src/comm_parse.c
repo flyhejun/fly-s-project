@@ -10,6 +10,7 @@
 #include "comm_parse.h"
 #include <string.h>
 #include "log.h"
+#include "crypto.h"
 
 /* ---- 内部辅助 ---- */
 
@@ -28,17 +29,33 @@ static uint32_t read_u32(const uint8_t *buf)
          | ((uint32_t)buf[3] << 24);
 }
 
-/* XOR CRC：从 SOF 到 PAYLOAD 末尾逐字节异或 */
+static uint8_t bitrev(uint8_t x)
+{
+    uint8_t r = 0;
+    uint8_t i;
+
+    for (i = 0; i < 8; i++)
+    {
+        r = (uint8_t)((r << 1) | (x & 1));
+        x >>= 1;
+    }
+    return r;
+}
+/* CRC-8/MAXIM：poly 0x31, init 0x00, xorout 0x00（两端一致） */
 static uint8_t calc_crc(const uint8_t *data, size_t len)
 {
     uint8_t crc = 0;
-    size_t i;
+    size_t i, j;
 
     for (i = 0; i < len; i++)
     {
-        crc ^= data[i];
+        crc ^= bitrev(data[i]);
+        for (j = 0; j < 8; j++)
+        {
+            crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0x31) : (uint8_t)(crc << 1);
+        }
     }
-    return crc;
+    return bitrev(crc);
 }
 
 /* ---- API ---- */
@@ -48,7 +65,7 @@ int comm_parse_frame(const uint8_t *raw, size_t len, ParsedFrame_t *out)
     uint16_t payload_len;
     uint8_t  type;
     uint8_t  expected_crc, actual_crc;
-    size_t   payload_start;
+    uint8_t  plain[32];     /* 明文缓冲区：解密 payload 用（raw 是 const） */
     const uint8_t *p;
 
     if (raw == NULL || out == NULL)
@@ -65,15 +82,17 @@ int comm_parse_frame(const uint8_t *raw, size_t len, ParsedFrame_t *out)
     /* 4. 总长应 = SOF+TYPE+LEN+PAYLOAD+CRC+EOF */
     if (len != (size_t)(FRAME_OVERHEAD + payload_len))
         return 0;
-    /* 5. CRC 校验：从 SOF 到 PAYLOAD 末尾（共 4+payload_len 字节） */
+    /* 5. CRC8 校验：从 SOF 到 PAYLOAD 密文末尾 */
     expected_crc = raw[4 + payload_len];
     actual_crc   = calc_crc(raw, 4 + payload_len);
     if (expected_crc != actual_crc)
         return 0;
 
-    /* 6. 指向 payload 起始 */
-    payload_start = 4;
-    p             = &raw[payload_start];
+    /* 6. 拷贝到本地缓冲区并解密 payload（CTR 等长，就地解密） */
+    memcpy(plain, raw, len);
+    if (aes128_ctr_crypt(&plain[4], &plain[4], payload_len) != 0)
+        return 0;
+    p = &plain[4];
 
     /* 7. 按类型解析 payload */
     memset(out, 0, sizeof(*out));

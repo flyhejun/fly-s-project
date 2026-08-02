@@ -15,19 +15,36 @@
   ******************************************************************************
   */
 #include "comm_protocol.h"
+#include "aes128.h"
 
 /* ---- 内部辅助 ---------------------------------------------------------- */
 
+static uint8_t bitrev(uint8_t x)
+{
+    uint8_t r = 0;
+    uint8_t i;
+
+    for (i = 0; i < 8; i++)
+    {
+        r = (uint8_t)(r << 1) | (x & 1);
+        x >>= 1;
+    }
+    return r;
+}
+
+/* CRC-8/MAXIM：poly 0x31, init 0x00, xorout 0x00（两端一致） */
 static uint8_t calc_crc(const uint8_t *data, uint16_t len)
 {
     uint8_t crc = 0;
-    uint16_t i;
+    uint16_t i, b;
 
     for (i = 0; i < len; i++)
     {
-        crc ^= data[i];
+        crc ^= bitrev(data[i]);
+        for (b = 0; b < 8; b++)
+            crc = (crc & 0x80) ? (uint8_t)((crc << 1) ^ 0x31) : (uint8_t)(crc << 1);
     }
-    return crc;
+    return bitrev(crc);
 }
 
 /* 2 字节小端写入 */
@@ -87,6 +104,7 @@ uint16_t Comm_PackNotify(uint8_t *buf, const FallEvent_Data_t *event)
     write_u32(&buf[idx], event->gyro_sq);
     idx += 4;
 
+    AES128_CTR(&buf[4], &buf[4], COMM_NOTIFY_PAYLOAD_LEN);  /* 加密 PAYLOAD */
     /* CRC：从 SOF 到 PAYLOAD 末尾 */
     buf[idx] = calc_crc(buf, idx);
     idx++;
@@ -127,6 +145,7 @@ uint16_t Comm_PackRealTime(uint8_t *buf, const Comm_DateTime_t *date,
     write_u32(&buf[idx], gyro_sq);
     idx += 4;
 
+    AES128_CTR(&buf[4], &buf[4], COMM_REALTIME_PAYLOAD_LEN);  /* 加密 PAYLOAD */
     buf[idx] = calc_crc(buf, idx);
     idx++;
 
@@ -152,6 +171,7 @@ uint16_t Comm_PackStatusReply(uint8_t *buf, uint8_t state)
 
     buf[idx++] = state;
 
+    AES128_CTR(&buf[4], &buf[4], COMM_STATUS_PAYLOAD_LEN);  /* 加密 PAYLOAD */
     buf[idx] = calc_crc(buf, idx);
     idx++;
 
@@ -171,8 +191,6 @@ uint16_t Comm_PackStatusReply(uint8_t *buf, uint8_t state)
 int Comm_ParseCmd(const uint8_t *frame, uint16_t len, Comm_Cmd_t *cmd)
 {
     uint16_t payload_len;
-    uint16_t i;
-    uint8_t  crc = 0;
 
     /* 最小帧长：SOF+TYPE+LEN+CRC+EOF = 6 */
     if (len < COMM_FRAME_OVERHEAD)
@@ -185,10 +203,8 @@ int Comm_ParseCmd(const uint8_t *frame, uint16_t len, Comm_Cmd_t *cmd)
     if (len != (uint16_t)(COMM_FRAME_OVERHEAD + payload_len))
         return 0;
 
-    /* CRC：从 SOF 到 PAYLOAD 末尾 */
-    for (i = 0; i < 4 + payload_len; i++)
-        crc ^= frame[i];
-    if (crc != frame[4 + payload_len])
+    /* CRC8：从 SOF 到 PAYLOAD 末尾 */
+    if (calc_crc(frame, 4 + payload_len) != frame[4 + payload_len])
         return 0;
 
     cmd->type = frame[1];
@@ -217,7 +233,7 @@ int Comm_ParseCmd(const uint8_t *frame, uint16_t len, Comm_Cmd_t *cmd)
             break;
 
         case COMM_TYPE_ALARM_CANCEL:
-        case COMM_TYPE_QUERY_STATUS:
+        case COMM_TYPE_CHECK_STATUS:
             if (payload_len != 0) return 0;
             break;
 

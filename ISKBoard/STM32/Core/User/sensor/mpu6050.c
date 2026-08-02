@@ -11,7 +11,7 @@
 uint8_t MPU6050_ReadID(void)
 {
     uint8_t id;
-    SOFT_I2C_ReadBytes(MPU6050_ADDR, MPU6050_REG_WHO_AM_I, &id, 1);
+    SOFT_I2C_ReadBytesFrom(MPU6050_ADDR, MPU6050_REG_WHO_AM_I, &id, 1);
     return id;
 }
 
@@ -34,30 +34,30 @@ void MPU6050_Init(void)
      * 1. 唤醒 MPU6050
      *    PWR_MGMT_1 bit6 (SLEEP) = 0 → 退出睡眠
      */
-    SOFT_I2C_WriteOneByte(MPU6050_ADDR, MPU6050_REG_PWR_MGMT_1, 0x00);
+    SOFT_I2C_WriteByteTo(MPU6050_ADDR, MPU6050_REG_PWR_MGMT_1, 0x00);
     HAL_Delay(100);  // 等待芯片从睡眠唤醒（数据手册建议）
     /*
      * 2. 配置采样率
      *    公式: 采样率 = 1kHz / (1 + SMPLRT_DIV) = 1k / 8 = 125Hz
      */
-    SOFT_I2C_WriteOneByte(MPU6050_ADDR, MPU6050_REG_SAMPLE_RATE_DIV, 0x07);
+    SOFT_I2C_WriteByteTo(MPU6050_ADDR, MPU6050_REG_SAMPLE_RATE_DIV, 0x07);
     /*
      * 3. 低通滤波器配置
      *    DLPF_CFG = 0 → 加速度带宽 260Hz, 陀螺仪带宽 256Hz
      */
-    SOFT_I2C_WriteOneByte(MPU6050_ADDR, MPU6050_REG_DLPF_CONFIG, 0x00);
+    SOFT_I2C_WriteByteTo(MPU6050_ADDR, MPU6050_REG_DLPF_CONFIG, 0x00);
     /*
      * 4. 陀螺仪量程：±250°/s
      *    灵敏度最高 (131 LSB/°/s)，跌倒检测用得到精细的角速度数据
      */
-    SOFT_I2C_WriteOneByte(MPU6050_ADDR, MPU6050_REG_GYRO_CONFIG, MPU6050_GYRO_RANGE_250DPS);
+    SOFT_I2C_WriteByteTo(MPU6050_ADDR, MPU6050_REG_GYRO_CONFIG, MPU6050_GYRO_RANGE_250DPS);
 
     /*
      * 5. 加速度计量程：±2g
      *    灵敏度最高 (16384 LSB/g)
      *    如果后续发现数据截顶（值卡在 ±32767），再扩大到 ±4g
      */
-    SOFT_I2C_WriteOneByte(MPU6050_ADDR, MPU6050_REG_ACCEL_CONFIG, MPU6050_ACCEL_RANGE_2G);
+    SOFT_I2C_WriteByteTo(MPU6050_ADDR, MPU6050_REG_ACCEL_CONFIG, MPU6050_ACCEL_RANGE_2G);
 }
 
 
@@ -87,7 +87,7 @@ uint8_t MPU6050_ReadAll(MPU_Raw_t *data)
     uint8_t buf[14];
 
     /* 从 0x3B 连续读 14 字节 */
-    if (SOFT_I2C_ReadBytes(MPU6050_ADDR, MPU6050_REG_ACCEL_DATA_START, buf, 14) != 0)
+    if (SOFT_I2C_ReadBytesFrom(MPU6050_ADDR, MPU6050_REG_ACCEL_DATA_START, buf, 14) != 0)
     {
         return 1;
     }

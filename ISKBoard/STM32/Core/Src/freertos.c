@@ -57,10 +57,10 @@ typedef struct {
 static FallEvent_Data_t s_event;
 
 /* 实时数据上传使能（失重停传，超时/报警结束恢复） */
-volatile uint8_t g_data_stream_enable = 1;
+volatile uint8_t g_data_stream = 1;
 
 /* 报警取消标志（下行 ALARM_CANCEL 指令置位） */
-volatile uint8_t g_alarm_cancel = 0;
+volatile uint8_t g_alarm = 0;
 
 /* 当前年月日时分（上位机 TIME_SYNC 周期性下发，直接存储不换算） */
 static uint16_t g_date_year;
@@ -208,10 +208,10 @@ void MX_FREERTOS_Init(void) {
 /* 报警逻辑：LED + 蜂鸣器 */
 static void alarm_routine(uint32_t tick_start)
 {
-    g_alarm_cancel = 0;   /* 复位下行取消标志 */
+    g_alarm = 0;   /* 复位下行取消标志 */
     while ((osKernelGetTickCount() - tick_start) <= 15000)
     {
-        if (osSemaphoreAcquire(sensorSemHandle, 0) == osOK || g_alarm_cancel)
+        if (osSemaphoreAcquire(sensorSemHandle, 0) == osOK || g_alarm)
         {
             /* 按键或下行指令取消报警 */
             HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6, GPIO_PIN_SET);
@@ -307,7 +307,7 @@ void fallTask(void *argument)
           switch (event)
           {
               case FALL_EVENT_FREEFALL:
-                  g_data_stream_enable = 0;   /* 失重 → 停止实时上传 */
+                  g_data_stream = 0;   /* 失重 → 停止实时上传 */
                   printf("[FALL] FREE_FALL detected! g=%lu.%02lu\n", g_int, g_frac);
                   break;
               case FALL_EVENT_IMPACT:
@@ -319,7 +319,7 @@ void fallTask(void *argument)
                   osSemaphoreRelease(alarmSemHandle);
                   break;
               case FALL_EVENT_TIMEOUT:
-                  g_data_stream_enable = 1;   /* 误报超时 → 恢复实时上传 */
+                  g_data_stream = 1;   /* 误报超时 → 恢复实时上传 */
                   printf("[FALL] timeout, back to NORMAL\n");
                   break;
               default:
@@ -340,7 +340,7 @@ void fallTask(void *argument)
       osSemaphoreAcquire(alarmSemHandle, osWaitForever);
       time_start = osKernelGetTickCount();
       alarm_routine(time_start);
-      g_data_stream_enable = 1;   /* 报警结束 → 恢复实时上传 */
+      g_data_stream = 1;   /* 报警结束 → 恢复实时上传 */
       FallDetect_Reset();
 
       msg.len = Comm_PackNotify(msg.data, &s_event);
@@ -380,7 +380,7 @@ void commTask(void *argument)
     }
 
     /* 10Hz 实时数据（上传使能时） */
-    if (g_data_stream_enable)
+    if (g_data_stream)
     {
         date.year   = g_date_year;
         date.month  = g_date_month;
@@ -406,7 +406,7 @@ void commTask(void *argument)
                     break;
 
                 case COMM_TYPE_ALARM_CANCEL:
-                    g_alarm_cancel = 1;
+                    g_alarm = 1;
                     printf("[CMD] ALARM_CANCEL\n");
                     break;
 
@@ -432,7 +432,7 @@ void commTask(void *argument)
                            g_date_hour, g_date_minute);
                     break;
 
-                case COMM_TYPE_QUERY_STATUS:
+                case COMM_TYPE_CHECK_STATUS:
                     tx_len = Comm_PackStatusReply(tx_buf, (uint8_t)FallDetect_GetState());
                     ESP32_Send(tx_buf, tx_len);
                     break;
@@ -443,6 +443,8 @@ void commTask(void *argument)
         }
     }
 
+    /* 断开后补发 AT+BLEADVSTART 恢复广播 */
+    ESP32_CheckAdvStatus();
   }
   /* USER CODE END commTask */
 }

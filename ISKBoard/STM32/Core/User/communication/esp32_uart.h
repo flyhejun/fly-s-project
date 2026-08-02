@@ -17,6 +17,7 @@ typedef enum {
 } BLE_Init_Status_t;
 
 void ESP32_Send(const uint8_t *buf, uint16_t len);
+void ESP32_CheckAdvStatus(void);
 void ESP32_RX_Char(uint8_t ch);
 BLE_Init_Status_t ESP32_Init_BLE(void);
 

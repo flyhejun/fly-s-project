@@ -10,11 +10,11 @@ CFLAGS   = -Wall -Wextra -Wno-unused-parameter -O2 -Isrc -Iinclude \
 
 LDFLAGS  = third_party/cjson/lib/libcjson.a \
            third_party/mosquitto/lib/libmosquitto.a \
-           $(shell pkg-config --libs gio-2.0) -lpthread
+           $(shell pkg-config --libs gio-2.0) -lpthread -lssl -lcrypto
 
 TARGET   = isk_gateway
 
-SRCS     = src/main.c src/ble_central.c src/comm_parse.c src/mqtt_publish.c src/log.c
+SRCS     = src/main.c src/ble_central.c src/comm_parse.c src/mqtt_publish.c src/log.c src/crypto.c
 OBJS     = $(SRCS:.c=.o)
 
 $(TARGET): $(OBJS)

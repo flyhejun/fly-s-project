@@ -10,8 +10,14 @@
 #include <string.h>
 #include <stdio.h>
 
+/* ================================================================
+ *  变量定义
+ * ================================================================ */
+
 static char    rx_line[64];
 static uint8_t rx_pos;
+
+volatile uint8_t g_ble_adv_status = 0; /* 原子读写，广播状态 */
 
 /* ---- 下行指令帧接收（中断上下文） ---- */
 #define RX_FRAME_RING_SIZE  4       /* 帧环形缓冲深度 */
@@ -27,22 +33,103 @@ static uint16_t rx_frame_ring_len[RX_FRAME_RING_SIZE];
 static volatile uint8_t rx_frame_head;      /* 写索引（中断） */
 static volatile uint8_t rx_frame_tail;      /* 读索引（任务） */
 
-/* 统一发送入口：固定 100ms 超时 */
-static int uart2_send(const uint8_t *buf, uint16_t len)
+/* ================================================================
+ *  前置声明（内部 static 函数，定义在调用处之后）
+ * ================================================================ */
+static int  uart2_send(const uint8_t *buf, uint16_t len);
+static void uart2_pause_it(void);
+static void uart2_resume_it(void);
+static int  uart2_poll_byte(uint8_t *ch);
+static int  uart2_read_byte(uint8_t *ch, uint32_t timeout_ms);
+static void uart2_flush(void);
+static int  send_at_cmd(const char *cmd, uint32_t timeout_ms);
+static void parse_ble_status(const char *line);
+
+/* ================================================================
+ *  BLE 初始化 — AT 命令轮询模式
+ * ================================================================ */
+
+/* BLE 初始化 AT 命令链表（可连接广播 + GATT Server）
+ *
+ * 广播包走实时数据（上行，树莓派免连接接收）；
+ * GATT Server 提供可写特征值 0xC302（下行，树莓派按需连接写指令）。
+ */
+static const char *at_sequence[] = {
+    "AT",                        /* 测试 ESP32 是否在线         */
+    "AT+BLEINIT=2",              /* 初始化为 BLE Server         */
+    "AT+BLENAME=FallSensor",     /* 设置 BLE 广播名             */
+    "AT+BLEGATTSSRVCRE",         /* 创建 GATT 服务（含可写特征值）*/
+    "AT+BLEGATTSSRVSTART",       /* 启动 GATT 服务              */
+    "AT+BLEADVPARAM=160,160,0,0,7",  /* 广播参数 type=0 可连接  */
+    "AT+BLEADVSTART",            /* 开始 BLE 广播               */
+};
+
+#define AT_CMD_COUNT  (sizeof(at_sequence) / sizeof(at_sequence[0]))
+#define AT_MAX_RETRY  3
+#define AT_TIMEOUT_MS 1000
+
+/**
+  * @brief  ESP32 BLE 初始化（阻塞）
+  *
+  * 执行流程：
+  *   1. 暂停 UART2 中断接收 → 切换轮询模式
+  *   2. 清空 ESP32 可能发出的启动信息
+  *   3. 依次发送 AT 命令，每条最多重试 3 次
+  *   4. 恢复 UART2 中断接收
+  *
+  * @note  应在 RTOS 任务中调用（依赖 osDelay/HAL_GetTick）
+  */
+BLE_Init_Status_t ESP32_Init_BLE(void)
 {
-    return HAL_UART_Transmit(&huart2, (uint8_t *)buf, len, 100);
+    int i, retry;
+    int ok;
+
+    /* 1. 切换为轮询模式 */
+    uart2_pause_it();
+
+    /* 2. 清空启动垃圾信息 */
+    uart2_flush();
+
+    /* 3. 执行 AT 命令序列 */
+    for (i = 0; i < (int)AT_CMD_COUNT; i++)
+    {
+        ok = 0;
+        for (retry = 0; retry < AT_MAX_RETRY; retry++)
+        {
+            ok = send_at_cmd(at_sequence[i], AT_TIMEOUT_MS);
+            if (ok) break;
+        }
+
+        if (!ok)
+        {
+            printf("[ESP32] AT FAIL: %s\n", at_sequence[i]);
+            uart2_resume_it();
+            return BLE_INIT_FAIL;
+        }
+        printf("[ESP32] AT OK: %s\n", at_sequence[i]);
+    }
+
+    /* 4. 恢复中断模式 */
+    uart2_resume_it();
+
+    printf("[ESP32] BLE initialized successfully\n");
+    return BLE_INIT_OK;
 }
 
 /* ================================================================
- *  ESP32_Send — 发数据帧（通过 AT+BLEADVDATA 更新广播包）
- *
- *  数据包装格式（BLE AD Structure）：
- *    [Flags: 02 01 06] [MfgData: len FF FF FF] [帧数据 SOF...EOF]
- *    ── 3B ──────────   ── 4B ──────────────   ── 7~21B ─────
- *
- *  最长帧 21B + 7B 开销 = 28B，HEX 编码后 56 字符，符合 31 字节限制。
- *  采用 Fire & Forget 模式（不等待 OK），保证 10Hz 实时数据吞吐。
+ *  上行：数据帧 → ESP32 广播包
  * ================================================================ */
+
+/**
+  * @brief  发数据帧（通过 AT+BLEADVDATA 更新广播包）
+  *
+  * 数据包装格式（BLE AD Structure）：
+  *   [Flags: 02 01 06] [MfgData: len FF FF FF] [帧数据 SOF...EOF]
+  *   ── 3B ──────────   ── 4B ──────────────   ── 7~21B ─────
+  *
+  * 最长帧 21B + 7B 开销 = 28B，HEX 编码后 56 字符，符合 31 字节限制。
+  * 采用 Fire & Forget 模式（不等待 OK），保证 10Hz 实时数据吞吐。
+  */
 void ESP32_Send(const uint8_t *buf, uint16_t len)
 {
     uint8_t ad[64];         /* AD Structure 构建缓冲 */
@@ -84,12 +171,16 @@ void ESP32_Send(const uint8_t *buf, uint16_t len)
 }
 
 /* ================================================================
- *  ESP32_RX_Char — UART2 RX 中断逐字喂入
- *
- *  双模式状态机：
- *    行模式  默认，丢弃非帧数据（ESP32 启动信息 / AT 响应）
- *    帧模式  检测到 SOF(0xAA) 进入，按 LEN 计算帧长接收下行指令帧
+ *  下行：接收 ESP32 数据 + 重启广播
  * ================================================================ */
+
+/**
+  * @brief  UART2 RX 中断逐字喂入
+  *
+  * 双模式状态机：
+  *   行模式  默认，收 +WRITE/BLEDISCONN 状态行，丢弃其余噪声
+  *   帧模式  检测到 SOF(0xAA) 进入，按 LEN 计算帧长接收下行指令帧
+  */
 void ESP32_RX_Char(uint8_t ch)
 {
     uint16_t plen;
@@ -139,9 +230,14 @@ void ESP32_RX_Char(uint8_t ch)
     }
     else
     {
-        /* ---- 行模式：丢弃非帧数据（ESP32 启动信息等） ---- */
+        /* ---- 行模式：收满一行 → 解析 +BLEDISCONN ---- */
         if (ch == '\n' || ch == '\r')
         {
+            if (rx_pos > 0)
+            {
+                rx_line[rx_pos++] = '\0';
+                parse_ble_status(rx_line);
+            }
             rx_pos = 0;
         }
         else if (rx_pos < sizeof(rx_line) - 1)
@@ -151,10 +247,22 @@ void ESP32_RX_Char(uint8_t ch)
     }
 }
 
-/* ================================================================
- *  ESP32_RX_GetFrame — 取回完整下行指令帧
- *  commTask 轮询调用；取走后清除就绪标志
- * ================================================================ */
+static void parse_ble_status(const char *line)
+{
+    if (strstr(line, "+BLEDISCONN"))
+    {
+        g_ble_adv_status = 1;
+    }
+}
+
+/**
+  * @brief  取回完整下行指令帧
+  * @param  buf  输出：帧数据（含 SOF/EOF）
+  * @param  len  输出：帧长
+  * @retval 1  取到一帧（buf 已填充）
+  *         0  无完整帧
+  * @note   commTask 轮询调用；取走后清除就绪标志
+  */
 uint8_t ESP32_RX_GetFrame(uint8_t *buf, uint16_t *len)
 {
     if (rx_frame_tail == rx_frame_head)
@@ -167,17 +275,33 @@ uint8_t ESP32_RX_GetFrame(uint8_t *buf, uint16_t *len)
     return 1;
 }
 
+/**
+  * @brief  检测断开后重启广播
+  *
+  * 在中断里检测到 +BLEDISCONN 只置了 g_ble_adv_restart 标志。
+  * 本函数在 commTask（任务上下文）轮询调用，发现标志后补发
+  * AT+BLEADVSTART，恢复可连接广播。
+  *
+  * 注意：必须放任务里，不能放中断——HAL_UART_Transmit 是阻塞的。
+  */
+void ESP32_CheckAdvStatus(void)
+{
+    if (g_ble_adv_status)
+    {
+        g_ble_adv_status = 0;
+        uart2_send((const uint8_t *)"AT+BLEADVSTART\r\n", 16);
+    }
+}
+
 /* ================================================================
- *  BLE 初始化 — AT 命令轮询模式
- *
- * 设计说明：
- *   - 初始化期间临时暂停 UART2 中断接收，改用直接读 RDR 寄存器轮询
- *   - 避免与 HAL_UART_Receive_IT 的状态机冲突（RxState = BUSY_RX 时
- *     HAL_UART_Receive 会拒绝服务）
- *   - 初始化完成后恢复中断模式，不影响后续正常收发
+ *  内部工具：UART 读写
  * ================================================================ */
 
-/* ---- 内部工具：UART 轮询读 ---- */
+/* 统一发送入口：固定 100ms 超时 */
+static int uart2_send(const uint8_t *buf, uint16_t len)
+{
+    return HAL_UART_Transmit(&huart2, (uint8_t *)buf, len, 100);
+}
 
 /** 暂停 UART2 中断接收 */
 static void uart2_pause_it(void)
@@ -235,8 +359,6 @@ static void uart2_flush(void)
     while (uart2_poll_byte(&dummy))   /* 快速排空，不等待 */
         ;
 }
-
-/* ---- AT 命令交互 ---- */
 
 /**
   * @brief  发送 AT 命令并等待 OK/ERROR 响应
@@ -296,67 +418,4 @@ static int send_at_cmd(const char *cmd, uint32_t timeout_ms)
 
 done:
     return found_ok;
-}
-
-/* ---- AT 命令序列 ---- */
-
-/* BLE 初始化 AT 命令链表（广播模式，无需 GATT） */
-static const char *at_sequence[] = {
-    "AT",                        /* 测试 ESP32 是否在线       */
-    "AT+BLEINIT=2",              /* 初始化为 BLE Server       */
-    "AT+BLENAME=FallSensor",     /* 设置 BLE 广播名           */
-    "AT+BLEADVPARAM=160,160,0,0,7",  /* 广播参数（100ms间隔）*/
-    "AT+BLEADVSTART",            /* 开始 BLE 广播             */
-};
-
-#define AT_CMD_COUNT  (sizeof(at_sequence) / sizeof(at_sequence[0]))
-#define AT_MAX_RETRY  3
-#define AT_TIMEOUT_MS 1000
-
-/**
-  * @brief  ESP32 BLE 初始化（阻塞）
-  *
-  * 执行流程：
-  *   1. 暂停 UART2 中断接收 → 切换轮询模式
-  *   2. 清空 ESP32 可能发出的启动信息
-  *   3. 依次发送 AT 命令，每条最多重试 3 次
-  *   4. 恢复 UART2 中断接收
-  *
-  * @note  应在 RTOS 任务中调用（依赖 osDelay/HAL_GetTick）
-  */
-BLE_Init_Status_t ESP32_Init_BLE(void)
-{
-    int i, retry;
-    int ok;
-
-    /* 1. 切换为轮询模式 */
-    uart2_pause_it();
-
-    /* 2. 清空启动垃圾信息 */
-    uart2_flush();
-
-    /* 3. 执行 AT 命令序列 */
-    for (i = 0; i < (int)AT_CMD_COUNT; i++)
-    {
-        ok = 0;
-        for (retry = 0; retry < AT_MAX_RETRY; retry++)
-        {
-            ok = send_at_cmd(at_sequence[i], AT_TIMEOUT_MS);
-            if (ok) break;
-        }
-
-        if (!ok)
-        {
-            printf("[ESP32] AT FAIL: %s\n", at_sequence[i]);
-            uart2_resume_it();
-            return BLE_INIT_FAIL;
-        }
-        printf("[ESP32] AT OK: %s\n", at_sequence[i]);
-    }
-
-    /* 4. 恢复中断模式 */
-    uart2_resume_it();
-
-    printf("[ESP32] BLE initialized successfully\n");
-    return BLE_INIT_OK;
 }

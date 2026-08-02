@@ -30,8 +30,8 @@ void SOFT_I2C_SendByte(uint8_t data);
 uint8_t SOFT_I2C_ReadByte(uint8_t ack);
 
 /* I2C 通用操作（封装了设备地址+寄存器地址的完整时序） */
-void SOFT_I2C_WriteOneByte(uint8_t dev_addr, uint8_t reg_addr, uint8_t data);
+void SOFT_I2C_WriteByteTo(uint8_t dev_addr, uint8_t reg_addr, uint8_t data);
 
-uint8_t SOFT_I2C_ReadBytes(uint8_t dev_addr, uint8_t reg_addr, uint8_t *buf, uint8_t len);
+uint8_t SOFT_I2C_ReadBytesFrom(uint8_t dev_addr, uint8_t reg_addr, uint8_t *buf, uint8_t len);
 
 #endif

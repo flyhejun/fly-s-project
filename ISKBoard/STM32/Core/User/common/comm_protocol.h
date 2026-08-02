@@ -69,7 +69,7 @@ typedef struct {
 #define COMM_TYPE_TEST_LED      0x84
 #define COMM_TYPE_TEST_BUZZER   0x85
 #define COMM_TYPE_TIME_SYNC     0x86
-#define COMM_TYPE_QUERY_STATUS  0x87
+#define COMM_TYPE_CHECK_STATUS  0x87
 
 /* ---- 阈值参数 ID（SET_THRESHOLD，仅阈值可改，gyro 不可下发） ---- */
 #define COMM_PARAM_FREEFALL_THRESHOLD  0x01

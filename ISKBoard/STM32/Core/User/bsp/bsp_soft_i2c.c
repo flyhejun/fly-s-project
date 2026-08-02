@@ -206,7 +206,7 @@ void SOFT_I2C_SendNack(void)
  *                     ↓              ↓          ↓
  *                 0xD0(写)      要写的寄存器   要写的值
  */
-void SOFT_I2C_WriteOneByte(uint8_t dev_addr, uint8_t reg_addr, uint8_t data)
+void SOFT_I2C_WriteByteTo(uint8_t dev_addr, uint8_t reg_addr, uint8_t data)
 {
     SOFT_I2C_Start();
 
@@ -230,7 +230,7 @@ void SOFT_I2C_WriteOneByte(uint8_t dev_addr, uint8_t reg_addr, uint8_t data)
  *
  * ACK = 继续读下一字节, NACK = 读完停止
  */
-uint8_t SOFT_I2C_ReadBytes(uint8_t dev_addr, uint8_t reg_addr, uint8_t *buf, uint8_t len)
+uint8_t SOFT_I2C_ReadBytesFrom(uint8_t dev_addr, uint8_t reg_addr, uint8_t *buf, uint8_t len)
 {
     uint8_t i;
 

@@ -79,6 +79,7 @@ Core/User/bsp/bsp_soft_i2c.c \
 Core/User/sensor/mpu6050.c \
 Core/User/algorithm/fall_detect.c \
 Core/User/common/comm_protocol.c \
+Core/User/common/aes128.c \
 Core/User/communication/esp32_uart.c \
 Core/User/common/util.c
 

@@ -21,10 +21,10 @@
  *  默认阈值
  * ================================================================ */
 #define FALL_DETECT_DEFAULT_CONFIG {                                   \
-    .freefall_threshold =  70000000U,   /* 约 0.51g                 */ \
+    .freefall_threshold = 70000000U,   /* 约 0.51g                 */ \
     .impact_threshold   = 1000000000U,  /* 约 1.93g                 */ \
-    .still_low          =  130000000U,  /* 约 0.7g                  */ \
-    .still_high         =  450000000U,  /* 约 1.3g                  */ \
+    .still_low          = 130000000U,  /* 约 0.7g                  */ \
+    .still_high         = 450000000U,  /* 约 1.3g                  */ \
     .impact_window_ms   = 800,          /* 失重→冲击窗口           */ \
     .still_time_ms      = 2000,         /* 静止确认时长             */ \
     .impact_timeout_ms  = 5000,         /* IMPACT 全局超时          */ \
