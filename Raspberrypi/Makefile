@@ -10,7 +10,7 @@ CFLAGS   = -Wall -Wextra -Wno-unused-parameter -O2 -Isrc -Iinclude \
 
 LDFLAGS  = third_party/cjson/lib/libcjson.a \
            third_party/mosquitto/lib/libmosquitto.a \
-           $(shell pkg-config --libs gio-2.0) -lpthread -lssl -lcrypto
+           $(shell pkg-config --libs gio-2.0) -lpthread
 
 TARGET   = isk_gateway
 

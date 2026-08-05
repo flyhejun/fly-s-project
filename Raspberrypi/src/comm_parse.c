@@ -33,14 +33,6 @@ static void write_u16(uint8_t *buf, uint16_t val)
     buf[1] = (uint8_t)((val >> 8) & 0xFF);
 }
 
-static void write_u32(uint8_t *buf, uint32_t val)
-{
-    buf[0] = (uint8_t)(val & 0xFF);
-    buf[1] = (uint8_t)((val >> 8) & 0xFF);
-    buf[2] = (uint8_t)((val >> 16) & 0xFF);
-    buf[3] = (uint8_t)((val >> 24) & 0xFF); 
-}
-
 static uint8_t bitrev(uint8_t x)
 {
     uint8_t r = 0;
