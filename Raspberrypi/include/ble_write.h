@@ -12,6 +12,7 @@
 #ifndef BLE_WRITE_H
 #define BLE_WRITE_H
 
+#include <stdint.h>
 #include <stddef.h>
 
 /**
