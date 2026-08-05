@@ -25,6 +25,14 @@
 #define FRAME_TYPE_REAL_TIME    0x02
 #define FRAME_TYPE_STATUS_REPLY 0x03
 
+/* --- 下行帧类型 ---*/
+#define FRAME_TYPE_SET_THRESHOLD 0x81
+#define FRAME_TYPE_ALARM_CANCEL  0x83
+#define FRAME_TYPE_TEST_LED      0x84
+#define FRAME_TYPE_TEST_BUZZER   0x85
+#define FRAME_TYPE_TIME_SYNC     0x86
+#define FRAME_TYPE_QUERY_STATUS  0x87
+
 /* Payload 大小 */
 #define REAL_TIME_PAYLOAD_LEN   14   /* date(6)+accel_sq(4)+gyro_sq(4) */
 #define NOTIFY_PAYLOAD_LEN      15   /* date(6)+type(1)+accel_sq(4)+gyro_sq(4) */
@@ -75,5 +83,8 @@ typedef struct {
   *         0  失败（帧格式错误 / CRC 错 / 类型未知）
   */
 int comm_parse_frame(const uint8_t *raw, size_t len, ParsedFrame_t *out);
+
+int comm_pack_cmd(uint8_t *buf, size_t buf_size, uint8_t type,
+                const uint8_t *payload, size_t payload_len);
 
 #endif /* COMM_PARSE_H */

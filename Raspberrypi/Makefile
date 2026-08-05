@@ -14,7 +14,7 @@ LDFLAGS  = third_party/cjson/lib/libcjson.a \
 
 TARGET   = isk_gateway
 
-SRCS     = src/main.c src/ble_central.c src/comm_parse.c src/mqtt_publish.c src/log.c src/crypto.c
+SRCS     = src/main.c src/ble_central.c src/comm_parse.c src/mqtt_publish.c src/log.c src/crypto.c src/ble_write.c
 OBJS     = $(SRCS:.c=.o)
 
 $(TARGET): $(OBJS)

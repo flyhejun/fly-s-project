@@ -16,7 +16,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <string.h>
+#include <strings.h>
+#include <time.h>
+
 #include "log.h"
+#include "comm_parse.h"
+#include "ble_write.h"
 
 #define MQTT_HOST       "121.40.252.238"
 #define MQTT_PORT       1883
@@ -55,8 +61,15 @@ static void on_connect(struct mosquitto *mosq, void *userdata, int rc)
 static void on_message(struct mosquitto *mosq, void *userdata,
                        const struct mosquitto_message *msg)
 {
-    cJSON *root;
-    cJSON *cmd;
+    cJSON   *root;
+    cJSON   *cmd;
+    cJSON   *param;
+    cJSON   *value;
+    uint8_t type;
+    int     plen;
+
+    uint8_t payload[16];
+    uint8_t buf[32];
 
     LOG_INFO("MQTT 收到 topic=%s", msg->topic);
 
@@ -71,8 +84,132 @@ static void on_message(struct mosquitto *mosq, void *userdata,
     if (cJSON_IsString(cmd))
     {
         LOG_INFO("收到指令: %s", cmd->valuestring);
-        /* TODO: 解析 cmd → 协议帧 → BLE Write 发给 ESP32 */
+
+        if (strcasecmp(cmd->valuestring, "set_threshold") == 0)
+        {
+            type = 0x81;
+            
+            param = cJSON_GetObjectItem(root, "param_id");
+            if (!cJSON_IsNumber(param))
+            {
+                LOG_WARN("set_threshold 缺少 param_id");
+                cJSON_Delete(root);
+                return;
+            }
+            payload[0] = (uint8_t)param->valueint;
+
+            value = cJSON_GetObjectItem(root, "value");
+            if (!cJSON_IsNumber(value))
+            {
+                LOG_WARN("set_threshold 缺少 value");
+                cJSON_Delete(root);
+                return;
+            }
+            payload[1] = (uint8_t)(value->valueint & 0xFF);
+            payload[2] = (uint8_t)((value->valueint >> 8) & 0xFF);
+            payload[3] = (uint8_t)((value->valueint >> 16) & 0xFF);
+            payload[4] = (uint8_t)((value->valueint >> 24) & 0xFF);
+            
+            plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 5);
+            if(ble_write_enqueue(buf, plen) != 0)
+            {
+                LOG_WARN("BLE 写入队列已满，丢弃指令");
+            }
+        }
+        else if(strcasecmp(cmd->valuestring, "alarm_cancel") == 0)
+        {
+            type = 0x83;
+
+            memset(payload, 0, sizeof(payload));
+            memset(buf, 0, sizeof(buf));
+            plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 0);
+            if(ble_write_enqueue(buf,plen) != 0)
+            {
+                LOG_WARN("BLE 写入队列已满，丢弃指令");
+            }
+
+        }
+        else if(strcasecmp(cmd->valuestring, "test_led") == 0)
+        {
+            type = 0x84;
+
+            value = cJSON_GetObjectItem(root, "value");
+            if (!cJSON_IsNumber(value))
+            {
+                LOG_WARN("test_led 缺少 value");
+                cJSON_Delete(root);
+                return;
+            }
+
+            payload[0] = (uint8_t)value->valueint;
+            plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 1);
+            if(ble_write_enqueue(buf,plen) != 0)
+            {
+                LOG_WARN("BLE 写入队列已满，丢弃指令");
+            }
+        }   
+        else if(strcasecmp(cmd->valuestring, "test_buzzer") == 0)
+        {
+            type = 0x85;
+
+            value = cJSON_GetObjectItem(root, "value");
+            if (!cJSON_IsNumber(value))
+            {
+                LOG_WARN("test_buzzer 缺少 value");
+                cJSON_Delete(root);
+                return;
+            }
+
+            payload[0] = (uint8_t)value->valueint;
+            plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 1);
+            if(ble_write_enqueue(buf,plen) != 0)
+            {
+                LOG_WARN("BLE 写入队列已满，丢弃指令");
+            }
+
+        }
+        else if(strcasecmp(cmd->valuestring, "time_sync") == 0)
+        {
+            time_t now = time(NULL);
+            struct tm *t = localtime(&now);
+
+            type = 0x86;
+
+            payload[0] = (uint8_t)((t->tm_year + 1900) & 0xFF);
+            payload[1] = (uint8_t)(((t->tm_year + 1900) >> 8) & 0xFF);
+            payload[2] = (uint8_t)(t->tm_mon + 1);
+            payload[3] = (uint8_t)(t->tm_mday);
+            payload[4] = (uint8_t)(t->tm_hour);
+            payload[5] = (uint8_t)(t->tm_min);
+
+            plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 6);
+            if(ble_write_enqueue(buf, plen) != 0)
+            {
+                LOG_WARN("BLE 写入队列已满，丢弃指令");
+            }
+            
+        }
+        else if(strcasecmp(cmd->valuestring, "query_status") == 0)
+        {
+            type = 0x87;
+
+            memset(payload, 0, sizeof(payload));
+            memset(buf, 0, sizeof(buf));
+            plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 0);
+            if(ble_write_enqueue(buf,plen) != 0)
+            {
+                LOG_WARN("BLE 写入队列已满，丢弃指令");
+            }
+        }
+        else
+        {
+            LOG_WARN("未知指令: %s", cmd->valuestring);
+            cJSON_Delete(root);
+            return;
+        }
     }
+
+
 
     cJSON_Delete(root);
 }
@@ -152,12 +289,16 @@ int main(void)
     /* 3. BLE 广播接收（ESP32 广播包 → ManufacturerData → 帧） */
     ble_start(conn);
 
-    /* 4. 主循环 */
+    /* 4. BLE GATT 写入子系统（MQTT 下行指令 → 连接 → 写特征值 → 断开） */
+    ble_write_init(conn);
+
+    /* 5. 主循环 */
     loop = g_main_loop_new(NULL, FALSE);
     LOG_INFO("进入主循环");
     g_main_loop_run(loop);
 
     g_main_loop_unref(loop);
+    ble_write_cleanup();
     mosquitto_loop_stop(g_mosq, true);
     mosquitto_destroy(g_mosq);
     mosquitto_lib_cleanup();

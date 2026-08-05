@@ -23,10 +23,22 @@ static uint16_t read_u16(const uint8_t *buf)
 /* 4 字节小端读 */
 static uint32_t read_u32(const uint8_t *buf)
 {
-    return (uint32_t)buf[0]
-         | ((uint32_t)buf[1] << 8)
-         | ((uint32_t)buf[2] << 16)
-         | ((uint32_t)buf[3] << 24);
+    return (uint32_t)buf[0] | ((uint32_t)buf[1] << 8) | 
+            ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
+}
+
+static void write_u16(uint8_t *buf, uint16_t val)
+{
+    buf[0] = (uint8_t)(val & 0xFF);
+    buf[1] = (uint8_t)((val >> 8) & 0xFF);
+}
+
+static void write_u32(uint8_t *buf, uint32_t val)
+{
+    buf[0] = (uint8_t)(val & 0xFF);
+    buf[1] = (uint8_t)((val >> 8) & 0xFF);
+    buf[2] = (uint8_t)((val >> 16) & 0xFF);
+    buf[3] = (uint8_t)((val >> 24) & 0xFF); 
 }
 
 static uint8_t bitrev(uint8_t x)
@@ -129,4 +141,25 @@ int comm_parse_frame(const uint8_t *raw, size_t len, ParsedFrame_t *out)
     }
 
     return 1;
+}
+
+
+int comm_pack_cmd(uint8_t *buf, size_t buf_size, uint8_t type,
+                  const uint8_t *payload, size_t payload_len)
+{
+     if(buf_size < (FRAME_OVERHEAD + payload_len))
+    {
+        return 0;
+    }
+    
+    memset(buf, 0, buf_size);
+
+    buf[0] = FRAME_SOF;
+    buf[1] = type;
+    write_u16(&buf[2], (uint16_t)payload_len);
+    memcpy(&buf[4], payload, payload_len);
+    buf[4 + payload_len] = calc_crc(buf, 4 + payload_len);
+    buf[5 + payload_len] = FRAME_EOF;
+
+    return (int)(FRAME_OVERHEAD + payload_len);
 }
