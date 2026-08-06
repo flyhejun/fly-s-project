@@ -9,6 +9,9 @@
 
 #include <stdint.h>
 
+/* BLE 初始化是否成功（commTask 据此决定是否操作 ESP32） */
+extern volatile uint8_t g_ble_ready;
+
 /* BLE 初始化状态 */
 typedef enum {
     BLE_INIT_IDLE = 0,
@@ -19,6 +22,7 @@ typedef enum {
 void ESP32_Send(const uint8_t *buf, uint16_t len);
 void ESP32_CheckAdvStatus(void);
 void ESP32_RX_Char(uint8_t ch);
+void ESP32_RX_Poll(void);
 BLE_Init_Status_t ESP32_Init_BLE(void);
 
 /**

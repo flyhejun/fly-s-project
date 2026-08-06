@@ -99,10 +99,16 @@ const osThreadAttr_t AlarmTask_attributes = {
 osThreadId_t CommTaskHandle;
 const osThreadAttr_t CommTask_attributes = {
   .name = "CommTask",
-  .stack_size = 256 * 4,   /* printf + 收发缓冲，512B 不足 */
+  .stack_size = 512 * 4,   /* 2048B：send_at_cmd buf[256] + printf 嵌套 */
   .priority = (osPriority_t) osPriorityNormal,
 };
 
+osThreadId_t HeartbeatTaskHandle;
+const osThreadAttr_t HeartbeatTask_attributes = {
+  .name = "HeartbeatTask",
+  .stack_size = 256 * 4,
+  .priority = (osPriority_t) osPriorityRealtime,   /* 最高优先级：心跳永不饿死 */
+};
 
 /* USER CODE END Variables */
 /* Definitions for imuQueue */
@@ -137,6 +143,7 @@ void sensorTask(void *argument);
 void fallTask(void *argument);
 void alarmTask(void *argument);
 void commTask(void *argument);
+void heartbeatTask(void *argument);
 /* USER CODE END FunctionPrototypes */
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
@@ -192,6 +199,8 @@ void MX_FREERTOS_Init(void) {
   AlarmTaskHandle = osThreadNew(alarmTask, NULL, &AlarmTask_attributes);
 
   CommTaskHandle = osThreadNew(commTask, NULL, &CommTask_attributes);
+
+  HeartbeatTaskHandle = osThreadNew(heartbeatTask, NULL, &HeartbeatTask_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -246,7 +255,6 @@ void sensorTask(void *argument)
 
   /* --- I2C & MPU6050 初始化 --- */
   SOFT_I2C_Init();                          // 初始化 I2C 引脚
-  
 
   id = MPU6050_ReadID();               // 读取芯片 ID 验证通信
   if (id == MPU6050_ADDR)              // 检查 ID 是否正确 (0x68)
@@ -264,7 +272,7 @@ void sensorTask(void *argument)
   }
   else
   {
-      printf("MPU6050 ERROR: Wrong ID!\n");
+      printf("MPU6050 ERROR: Wrong ID! (read 0x%02X)\n", id);
       for(;;)
       {
           osDelay(1000);  // 出错后挂起，不采样
@@ -358,21 +366,31 @@ void fallTask(void *argument)
 /* USER CODE END Header_commTask */
 void commTask(void *argument)
 {
-  CommEvent_t msg;
-  uint8_t     tx_buf[COMM_STATUS_FRAME_LEN];
-  uint16_t    tx_len;
-  uint8_t     rx_buf[64];
-  uint16_t    rx_len;
-  Comm_Cmd_t  cmd;
-  Comm_DateTime_t date;
+  CommEvent_t       msg;
+  uint8_t           tx_buf[COMM_NOTIFY_FRAME_LEN];  /* 最大帧（NOTIFY 21B） */
+  uint16_t          tx_len;
+  uint8_t           rx_buf[64];
+  uint16_t          rx_len;
+  Comm_Cmd_t        cmd;
+  Comm_DateTime_t   date;
 
   /* USER CODE BEGIN commTask */
 
-  /* 初始化 ESP32 BLE（阻塞，失败不影响继续运行） */
+  /* 初始化 ESP32 BLE（阻塞，失败不影响继续运行；未就绪则 g_ble_ready=0） */
   ESP32_Init_BLE();
 
   for (;;)
   {
+    /* BLE 未就绪：跳过所有 ESP32 操作 */
+    if (!g_ble_ready)
+    {
+        osDelay(100);
+        continue;
+    }
+
+    /* 轮询接收下行指令（无中断，结构性避免风暴） */
+    ESP32_RX_Poll();
+
     /* 100ms 节拍：等待事件帧最多 100ms（超时即到 10Hz 周期） */
     if (osMessageQueueGet(commEventQueueHandle, &msg, NULL, 100) == osOK)
     {
@@ -443,10 +461,18 @@ void commTask(void *argument)
         }
     }
 
-    /* 断开后补发 AT+BLEADVSTART 恢复广播 */
     ESP32_CheckAdvStatus();
   }
   /* USER CODE END commTask */
+}
+
+void heartbeatTask(void *argument)
+{
+  for(;;)
+  {
+    HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_9);
+    osDelay(500);
+  }
 }
 
 /* USER CODE END Application */

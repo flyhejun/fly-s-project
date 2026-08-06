@@ -104,7 +104,7 @@ void HAL_UART_MspInit(UART_HandleTypeDef* uartHandle)
 
   /* USER CODE END USART2_MspInit 0 */
 
-    HAL_NVIC_SetPriority(USART2_IRQn, 5, 0);
+    HAL_NVIC_SetPriority(USART2_IRQn, 15, 0);  /* 最低优先级：不抢占 SysTick，防中断风暴饿死调度器 */
     HAL_NVIC_EnableIRQ(USART2_IRQn);
 
     __HAL_RCC_USART2_CLK_ENABLE();
@@ -195,7 +195,7 @@ void MX_USART2_UART_Init(void)
     }
 
     /* USER CODE BEGIN USART2_Init 2 */
-    HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
+    /* 接收改轮询（commTask 调用 ESP32_RX_Poll），不用中断——防中断风暴 */
     /* USER CODE END USART2_Init 2 */
 }
 

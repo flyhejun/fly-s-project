@@ -19,6 +19,8 @@ static uint8_t rx_pos;
 
 volatile uint8_t g_ble_adv_status = 0; /* 原子读写，广播状态 */
 
+volatile uint8_t g_ble_ready = 0;      /* BLE 初始化成功标志 */
+
 /* ---- 下行指令帧接收（中断上下文） ---- */
 #define RX_FRAME_RING_SIZE  4       /* 帧环形缓冲深度 */
 
@@ -37,10 +39,7 @@ static volatile uint8_t rx_frame_tail;      /* 读索引（任务） */
  *  前置声明（内部 static 函数，定义在调用处之后）
  * ================================================================ */
 static int  uart2_send(const uint8_t *buf, uint16_t len);
-static void uart2_pause_it(void);
-static void uart2_resume_it(void);
 static int  uart2_poll_byte(uint8_t *ch);
-static int  uart2_read_byte(uint8_t *ch, uint32_t timeout_ms);
 static void uart2_flush(void);
 static int  send_at_cmd(const char *cmd, uint32_t timeout_ms);
 static void parse_ble_status(const char *line);
@@ -57,8 +56,8 @@ static void parse_ble_status(const char *line);
 static const char *at_sequence[] = {
     "AT",                        /* 测试 ESP32 是否在线         */
     "AT+BLEINIT=2",              /* 初始化为 BLE Server         */
-    "AT+BLENAME=FallSensor",     /* 设置 BLE 广播名             */
-    "AT+BLEGATTSSRVCRE",         /* 创建 GATT 服务（含可写特征值）*/
+    "AT+BLENAME=\"FallSensor\"",     /* 设置 BLE 广播名             */
+    "AT+BLEGATTSSRVCRE",         /* 创建 GATT 服务               */
     "AT+BLEGATTSSRVSTART",       /* 启动 GATT 服务              */
     "AT+BLEADVPARAM=160,160,0,0,7",  /* 广播参数 type=0 可连接  */
     "AT+BLEADVSTART",            /* 开始 BLE 广播               */
@@ -72,22 +71,22 @@ static const char *at_sequence[] = {
   * @brief  ESP32 BLE 初始化（阻塞）
   *
   * 执行流程：
-  *   1. 暂停 UART2 中断接收 → 切换轮询模式
+  *   1. 等 ESP32 上电启动
   *   2. 清空 ESP32 可能发出的启动信息
   *   3. 依次发送 AT 命令，每条最多重试 3 次
-  *   4. 恢复 UART2 中断接收
   *
   * @note  应在 RTOS 任务中调用（依赖 osDelay/HAL_GetTick）
+  *         全程轮询（无中断接收），成功后 g_ble_ready=1。
   */
 BLE_Init_Status_t ESP32_Init_BLE(void)
 {
     int i, retry;
     int ok;
 
-    /* 1. 切换为轮询模式 */
-    uart2_pause_it();
+    /* 1. 等 ESP32 上电启动 */
+    HAL_Delay(1000);
 
-    /* 2. 清空启动垃圾信息 */
+    /* 2. 清空残留 */
     uart2_flush();
 
     /* 3. 执行 AT 命令序列 */
@@ -102,15 +101,19 @@ BLE_Init_Status_t ESP32_Init_BLE(void)
 
         if (!ok)
         {
-            printf("[ESP32] AT FAIL: %s\n", at_sequence[i]);
-            uart2_resume_it();
-            return BLE_INIT_FAIL;
+            /* 仅 AT 连通性失败才中断；其余命令可能因 ESP32 已配置而报错，容错继续 */
+            if (i == 0) {
+                printf("[ESP32] AT FAIL: %s (no response)\n", at_sequence[i]);
+                g_ble_ready = 0;
+                return BLE_INIT_FAIL;
+            }
+            printf("[ESP32] AT WARN: %s (already set, continue)\n", at_sequence[i]);
+            continue;
         }
         printf("[ESP32] AT OK: %s\n", at_sequence[i]);
     }
 
-    /* 4. 恢复中断模式 */
-    uart2_resume_it();
+    g_ble_ready = 1;
 
     printf("[ESP32] BLE initialized successfully\n");
     return BLE_INIT_OK;
@@ -166,7 +169,7 @@ void ESP32_Send(const uint8_t *buf, uint16_t len)
     cmd[hex_pos++] = '\r';
     cmd[hex_pos++] = '\n';
 
-    /* ---- 3. 发送（Fire & Forget） ---- */
+    /* ---- 3. 发送（轮询模式，无中断，直接发） ---- */
     uart2_send((uint8_t *)cmd, hex_pos);
 }
 
@@ -276,6 +279,27 @@ uint8_t ESP32_RX_GetFrame(uint8_t *buf, uint16_t *len)
 }
 
 /**
+  * @brief  轮询接收 USART2 所有待收字节
+  * @note   commTask 周期调用。取代中断接收，结构性避免中断风暴：
+  *         无论 ESP32 发多少数据，只在调用时读一次，不会占满 CPU。
+  */
+void ESP32_RX_Poll(void)
+{
+    uint8_t ch;
+
+    while (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_RXNE))
+    {
+        ch = (uint8_t)(huart2.Instance->RDR & 0xFF);
+        ESP32_RX_Char(ch);
+    }
+    /* 清除溢出错误（数据过快时可能置位） */
+    if (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_ORE))
+    {
+        __HAL_UART_CLEAR_OREFLAG(&huart2);
+    }
+}
+
+/**
   * @brief  检测断开后重启广播
   *
   * 在中断里检测到 +BLEDISCONN 只置了 g_ble_adv_restart 标志。
@@ -303,20 +327,6 @@ static int uart2_send(const uint8_t *buf, uint16_t len)
     return HAL_UART_Transmit(&huart2, (uint8_t *)buf, len, 100);
 }
 
-/** 暂停 UART2 中断接收 */
-static void uart2_pause_it(void)
-{
-    HAL_NVIC_DisableIRQ(USART2_IRQn);
-}
-
-/** 恢复 UART2 中断接收 */
-static void uart2_resume_it(void)
-{
-    /* 重启中断接收（指向 usart.c 中的 rx_byte） */
-    HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
-    HAL_NVIC_EnableIRQ(USART2_IRQn);
-}
-
 /**
   * @brief  非阻塞读取一个字节（有数据立即返回，不等）
   * @param  ch  输出：读取到的字节
@@ -329,25 +339,6 @@ static int uart2_poll_byte(uint8_t *ch)
     {
         *ch = (uint8_t)(huart2.Instance->RDR & 0xFF);
         return 1;
-    }
-    return 0;
-}
-
-/**
-  * @brief  轮询读取一个字节，带超时
-  * @param  ch          输出：读取到的字节
-  * @param  timeout_ms  超时时间（毫秒）
-  * @retval 1  成功
-  *         0  超时
-  */
-static int uart2_read_byte(uint8_t *ch, uint32_t timeout_ms)
-{
-    uint32_t start = HAL_GetTick();
-
-    while ((HAL_GetTick() - start) < timeout_ms)
-    {
-        if (uart2_poll_byte(ch))
-            return 1;
     }
     return 0;
 }
@@ -369,53 +360,31 @@ static void uart2_flush(void)
   */
 static int send_at_cmd(const char *cmd, uint32_t timeout_ms)
 {
-    char    resp[64];   /* 每次读取一行 */
-    int     pos;
-    uint8_t ch;
+    uint8_t  ch;
     uint32_t start;
-    int     found_ok = 0;
+    int      found_ok = 0;
+    char     buf[256];
+    int      pos = 0;
 
-    /* --- 发送命令 --- */
+    /* 发送命令 */
     uart2_send((const uint8_t *)cmd, strlen(cmd));
     uart2_send((const uint8_t *)"\r\n", 2);
 
-    /* --- 逐行读取响应 --- */
+    /* 收集响应（超时内所有字节） */
+    memset(buf, 0, sizeof(buf));
     start = HAL_GetTick();
     while ((HAL_GetTick() - start) < timeout_ms)
     {
-        /* 读取一行（遇 \n 结束） */
-        pos = 0;
-        memset(resp, 0, sizeof(resp));
-
-        while (pos < (int)sizeof(resp) - 1)
+        if (uart2_poll_byte(&ch))
         {
-            if (!uart2_read_byte(&ch, timeout_ms - (HAL_GetTick() - start)))
-            {
-                goto done;   /* 超时 */
-            }
-
-            if (ch == '\n')
-            {
-                break;       /* 行结束 */
-            }
-            if (ch != '\r')
-            {
-                resp[pos++] = (char)ch;
-            }
-        }
-
-        /* --- 检查行内容 --- */
-        if (strstr(resp, "OK") != NULL)
-        {
-            found_ok = 1;
-            goto done;
-        }
-        if (strstr(resp, "ERROR") != NULL)
-        {
-            goto done;       /* 失败 */
+            if (pos < (int)sizeof(buf) - 1)
+                buf[pos++] = (char)ch;
         }
     }
 
-done:
+    /* 检查是否收到 OK */
+    if (strstr(buf, "OK") != NULL)
+        found_ok = 1;
+
     return found_ok;
 }
