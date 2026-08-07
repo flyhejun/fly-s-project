@@ -43,6 +43,8 @@ static int  uart2_poll_byte(uint8_t *ch);
 static void uart2_flush(void);
 static int  send_at_cmd(const char *cmd, uint32_t timeout_ms);
 static void parse_ble_status(const char *line);
+static void parse_write_urc(const char *line);
+static int  hex_to_bytes(const char *hex, uint8_t *out, uint16_t max_len);
 
 /* ================================================================
  *  BLE 初始化 — AT 命令轮询模式
@@ -55,6 +57,7 @@ static void parse_ble_status(const char *line);
  */
 static const char *at_sequence[] = {
     "AT",                        /* 测试 ESP32 是否在线         */
+    "AT+SYSMSG=4",               /* 开连接状态 URC（+BLEDISCONN 触发广播补发） */
     "AT+BLEINIT=2",              /* 初始化为 BLE Server         */
     "AT+BLENAME=\"FallSensor\"",     /* 设置 BLE 广播名             */
     "AT+BLEGATTSSRVCRE",         /* 创建 GATT 服务               */
@@ -240,6 +243,7 @@ void ESP32_RX_Char(uint8_t ch)
             {
                 rx_line[rx_pos++] = '\0';
                 parse_ble_status(rx_line);
+                parse_write_urc(rx_line);   /* +WRITE URC → 下行指令帧 */
             }
             rx_pos = 0;
         }
@@ -256,6 +260,142 @@ static void parse_ble_status(const char *line)
     {
         g_ble_adv_status = 1;
     }
+}
+
+static int hex_to_bytes(const char *hex, uint8_t *out, uint16_t max_len)
+{
+    uint8_t     j;
+    uint8_t     i = 0;
+    uint8_t     hex_len = strlen(hex);
+
+    if(hex_len % 2 == 1 || (hex_len/2) > max_len)
+        return 0;
+
+    while(i < hex_len)
+    {
+        j = i / 2;
+
+        if(hex[i] >= '0' && hex[i] <= '9')
+        {
+            if(i % 2 == 0)
+            {
+                out[j] = ((uint8_t)(hex[i] - '0') << 4);
+            }
+            else
+            {
+                out[j] = (((uint8_t)(hex[i] - '0')) | out[j]);    
+            }
+            
+        }
+        else if(hex[i] >= 'a' && hex[i] <= 'f')
+        {
+          if(i % 2 == 0)
+          {
+            out[j] = ((uint8_t)((hex[i]-'a') + 10) << 4);
+          }
+          else
+          {
+            out[j] = ((uint8_t)((hex[i]-'a') + 10) | out[j]);
+          }
+        }
+        else if(hex[i] >= 'A' && hex[i] <= 'F')
+        {
+          if(i % 2 == 0)
+          {
+            out[j] = ((uint8_t)((hex[i]-'A') + 10) << 4);
+          }
+          else
+          {
+            out[j] = ((uint8_t)((hex[i]-'A') + 10) | out[j]);
+          }
+        }
+        else
+            return 0;
+
+        i++;   
+    }
+    return (int)(hex_len/2);
+         
+}
+
+/** hex 字符 → 半字节值（非法字符返回 0xFF） */
+static uint8_t hexval(char c)
+{
+    if (c >= '0' && c <= '9') return (uint8_t)(c - '0');
+    if (c >= 'a' && c <= 'f') return (uint8_t)(c - 'a' + 10);
+    if (c >= 'A' && c <= 'F') return (uint8_t)(c - 'A' + 10);
+    return 0xFF;
+}
+
+/**
+  * @brief  解析 ESP32 GATTS 的 +WRITE URC，提取下行指令帧
+  * @note   BLE 客户端写特征值时，ESP-AT 经 UART 上报 +WRITE 行。
+  *         本函数兼容 value 的两种文本格式（连续 hex / <0xHH> 序列）；
+  *         原始字节场景由 0xAA 帧头触发逻辑处理，不会走到这里。
+  *         入队前只验 SOF/EOF，CRC 由 Comm_ParseCmd 再验。
+  */
+static void parse_write_urc(const char *line)
+{
+    const char *p;
+    const char *value;
+    uint8_t     frame[sizeof(rx_frame)];
+    uint16_t    flen;
+    int         n;
+
+    if (strstr(line, "+WRITE") == NULL)
+        return;
+
+    /* ---- 尖括号格式 <0xHH>,<0xHH>,...：value 本身按逗号分隔，
+     *      不能"取最后一个字段"，改为整行扫描 <0xHH> 模式（header 无 '<'） ---- */
+    flen = 0;
+    if (strstr(line, "<0x"))
+    {
+        for (p = line; *p != '\0' && flen < sizeof(frame); )
+        {
+            if (p[0] == '<' && p[1] == '0' && (p[2] == 'x' || p[2] == 'X')
+                && p[3] != '\0' && p[4] != '\0' && p[5] == '>')
+            {
+                uint8_t hi = hexval(p[3]);
+                uint8_t lo = hexval(p[4]);
+                if (hi <= 0x0F && lo <= 0x0F)
+                {
+                    frame[flen++] = (uint8_t)((hi << 4) | lo);
+                    p += 6;
+                    continue;
+                }
+            }
+            p++;
+        }
+    }
+    else
+    {
+        /* ---- 连续 hex 字符串：取最后一个 ',' 或 ':' 之后的字段 ---- */
+        p = strrchr(line, ',');
+        value = strrchr(line, ':');
+        if (p != NULL && (value == NULL || p > value))
+            value = p + 1;
+        else if (value != NULL)
+            value = value + 1;
+        else
+            return;
+
+        n = hex_to_bytes(value, frame, sizeof(frame));
+        if (n <= 0 || (uint16_t)n > sizeof(frame))
+            return;
+        flen = (uint16_t)n;
+    }
+
+    /* ---- 校验 SOF/EOF，合法才入队（CRC 由 Comm_ParseCmd 再验） ---- */
+    if (flen < COMM_FRAME_OVERHEAD)
+        return;
+    if (frame[0] != COMM_SOF || frame[flen - 1] != COMM_EOF)
+        return;
+
+    memcpy(rx_frame_ring[rx_frame_head], frame, flen);
+    rx_frame_ring_len[rx_frame_head] = flen;
+    rx_frame_head = (uint8_t)((rx_frame_head + 1) % RX_FRAME_RING_SIZE);
+    if (rx_frame_head == rx_frame_tail)
+        rx_frame_tail = (uint8_t)((rx_frame_tail + 1) % RX_FRAME_RING_SIZE);
 }
 
 /**

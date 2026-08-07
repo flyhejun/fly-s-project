@@ -36,7 +36,7 @@
 | **网关** | 树莓派（GLib D-Bus 扫 BLE + mosquitto MQTT），帧 → JSON → 云端 |
 | **构建** | STM32：`make -j8`（ISKBoard/STM32 的 Makefile，非 CMake）；网关：`make`（Raspberrypi） |
 | **烧录** | OpenOCD + ST-Link，或 STM32_Programmer_CLI 通过 UART |
-| **工具链** | STM32：`arm-none-eabi-gcc`；网关：gcc + libglib2.0-dev + openssl |
+| **工具链** | STM32：`arm-none-eabi-gcc`；网关：gcc + libglib2.0-dev（AES 纯 C 移植，无需 openssl） |
 
 **仓库**：git 根 `d:\fly project`（多子项目混合仓库）。多根工作区 `fly-s-project.code-workspace` 包含两个根：`ISKBoard/STM32` + `Raspberrypi`。原 `ISKBoard/ESP32` 已删除，不纳入。
 
@@ -63,12 +63,13 @@ d:\fly project/
 │   └── build/                     ← 构建产物（.o、.elf、.hex、.bin、.map）
 └── Raspberrypi/                   ← 树莓派网关子项目
     ├── Makefile                   ← gcc 构建（target: isk_gateway）
-    ├── include/                   ← comm_parse.h / crypto.h / log.h / mqtt_publish.h
+    ├── include/                   ← comm_parse.h / crypto.h / log.h / mqtt_publish.h / ble_write.h
     ├── src/
-    │   ├── main.c                 ← GLib 主循环 + MQTT 初始化
+    │   ├── main.c                 ← GLib 主循环 + MQTT 初始化 + cmd 指令映射
     │   ├── ble_central.c          ← BlueZ D-Bus 被动扫描广播包
-    │   ├── comm_parse.c           ← 帧解析（CRC-8 校验 + AES 解密）
-    │   ├── crypto.c               ← openssl EVP AES-128-CTR
+    │   ├── ble_write.c            ← GATT 按需连接写 0xC302（工作线程 + 队列）
+    │   ├── comm_parse.c           ← 帧解析（CRC-8 校验 + AES 解密）＋ 下行帧打包
+    │   ├── crypto.c               ← AES-128-CTR 纯 C 移植（Pi 无 openssl）
     │   ├── mqtt_publish.c         ← 帧 → JSON → MQTT
     │   └── log.c                  ← 日志（文件 + stderr）
     └── third_party/
@@ -85,7 +86,7 @@ d:\fly project/
 
 **树莓派（网关）**：使用 `Raspberrypi/Makefile`。
 - 依赖：`sudo apt install libglib2.0-dev`；cjson / mosquitto 静态库自带在 `third_party/`
-- 链接 `-lssl -lcrypto`（openssl EVP 解密）
+- 网关 AES 用纯 C 移植的 aes128（无 openssl，见 crypto.c）
 - 编译命令：在 `Raspberrypi` 下执行 `make`，产物 `isk_gateway`
 
 ## 通信链路总览
@@ -119,7 +120,7 @@ CommTask（100ms 节拍）
 ```
 
 - **上行（实时数据）走广播**：ESP32 广播包，树莓派免连接被动接收，天然支持 10Hz 吞吐。
-- **下行（控制指令）走 GATT**：树莓派按需连接 ESP32，写可写特征值 `0xC302`，ESP32 透传 UART2 给 STM32。
+- **下行（控制指令）走 GATT**：树莓派按需连接 ESP32，写可写特征值 `0xC302`；ESP-AT 以 `+WRITE:` URC 经 UART2 上报，STM32 解析 hex 值还原指令帧。
 
 ## 通信协议
 
@@ -157,10 +158,12 @@ CommTask（100ms 节拍）
 ## BLE 广播机制（esp32_uart.c）
 
 ESP32 跑 **AT 固件**，作为 BLE Server：
-- `AT+BLEINIT=2`（Server）+ `AT+BLENAME=FallSensor` + GATT 服务（含可写特征值 `0xC302`）+ `AT+BLEADVPARAM=160,160,0,0,7`（可连接广播）+ `AT+BLEADVSTART`。
+- 初始化序列：`AT` → `AT+SYSMSG=4`（开连接状态 URC）→ `AT+BLEINIT=2`（Server）→ `AT+BLENAME="FallSensor"` → `AT+BLEGATTSSRVCRE`（GATT 服务，含可写特征值 `0xC302`）→ `AT+BLEGATTSSRVSTART` → `AT+BLEADVPARAM=160,160,0,0,7`（可连接广播）→ `AT+BLEADVSTART`。仅 `AT` 失败才中断，其余命令失败 WARN 继续。
 - **发送上行帧**：`AT+BLEADVDATA="hex"` 把帧写进广播包 ManufacturerData。Fire & Forget（不等待 OK），保证 10Hz 吞吐。
-- **接收下行帧**：UART2 RX 中断双模式状态机 —— 行模式（默认，解析 `+BLEDISCONN`）＋ 帧模式（SOF 0xAA → 按 LEN 收整帧，SPSC 环形缓冲 4 深，无锁）。
-- 断开后 `+BLEDISCONN` 置位标志，`ESP32_CheckAdvStatus()` 在任务里补发 `AT+BLEADVSTART` 恢复广播（不能放中断——HAL 阻塞）。
+- **接收下行帧（轮询，无中断）**：commTask 周期调 `ESP32_RX_Poll()` 收 UART 字节，双模式状态机 —— 行模式（默认，解析 `+BLEDISCONN` / `+WRITE`）＋ 帧模式（SOF 0xAA → 按 LEN 收整帧，SPSC 环形缓冲 4 深，无锁）。
+- **下行帧来源**：Pi 写特征值后 ESP-AT 经 UART 上报 `+WRITE:` URC，`parse_write_urc()` 解析其 value（兼容 hex 字符串 / `<0xHH>` 序列；原始字节场景由 0xAA 帧头触发兜底）→ SOF/EOF 校验 → 入环形缓冲，CRC 由 `Comm_ParseCmd` 再验。
+- 断开后 `+BLEDISCONN` 置位标志，`ESP32_CheckAdvStatus()` 在任务里补发 `AT+BLEADVSTART` 恢复广播（不能放中断——HAL 阻塞；依赖 `AT+SYSMSG=4` 才有该 URC）。
+- 接收改轮询的原因：ESP32 广播期间持续发 UART 数据，中断模式会风暴饿死调度器（详见 memory `iskboard-stm32-esp32-ble-init-debug`）。
 
 ## FreeRTOS 任务架构（Core/Src/freertos.c）
 
@@ -174,10 +177,13 @@ AlarmTask (Normal, 512B)  ◀── alarmSem ────────┘
   alarm_routine: LED+蜂鸣器 15s（按键/下行可取消）
   → Comm_PackNotify → commEventQueue(3)
                                 │
-CommTask (Normal, 1024B)  ◀─────┘
-  100ms 节拍：事件帧 + 10Hz 实时帧 → ESP32_Send
+CommTask (Normal, 2048B)  ◀─────┘
+  100ms 节拍：ESP32_RX_Poll 收下行 → 事件帧 + 10Hz 实时帧 → ESP32_Send
   下行：ESP32_RX_GetFrame → Comm_ParseCmd → 指令分发
-  ESP32_Init_BLE() / ESP32_CheckAdvStatus()
+  ESP32_Init_BLE() / ESP32_CheckAdvStatus()；!g_ble_ready 时 osDelay(100) 跳过
+
+HeartbeatTask (Realtime, 512B)     PC9 心跳灯 500ms 翻转
+  （最高优先级 + 纯 GPIO，不用 printf，系统卡死也照闪）
 
 defaultTask (Normal, 512B)     空循环 1s delay
 ```
@@ -203,10 +209,11 @@ defaultTask (Normal, 512B)     空循环 1s delay
 
 ## 已知问题（待修）
 
-- **树莓派下行链路未实现**：`main.c` 的 `on_message` 收到 MQTT cmd 只打印不转发，未实现"MQTT 指令 → 协议帧 → BLE GATT Write(0xC302) → ESP32"。
+- **树莓派下行链路已实现、未实测（最高优先）**：`on_message` → `comm_pack_cmd` → `ble_write_enqueue` → GATT Write(0xC302) 全链路代码完成，但没在真实环境跑过。实测重点确认 ESP-AT 的 `+WRITE:` URC 实际格式（hex 字符串 / `<0xHH>` 序列 / 原始字节）与 STM32 `parse_write_urc` 兼容。
 - **`g_time_synced` 是死标志**：TIME_SYNC 置位 1，但没有任何读取方。
 - **硬编码**：MQTT 账号密码（main.c）、AES key/IV（两端）、ESP32 MAC（ble_central.c）均写死在源码。
 - **ESP32_Send Fire & Forget**：不校验 `AT+BLEADVDATA` 是否执行成功，广播包丢包无感知（10Hz 吞吐的取舍）。
+- **`AT+SYSMSG=4` 待实测确认**：`+BLEDISCONN`（广播补发依赖）与 `+WRITE`（下行依赖）的 URC 显示受固件 SYSMSG 位控制；若实测发现广播不恢复或下行收不到，先查 SYSMSG 设置。
 
 ## 跌倒检测算法
 
@@ -272,7 +279,7 @@ NORMAL ──(accel_sq < 70M)──▶ FREE_FALL
 | `fall_detection/pi01/data` | REAL_TIME 实时帧（date + accel_sq + gyro_sq） |
 | `fall_detection/pi01/alert` | EVENT_NOTIFY 跌倒事件 |
 | `fall_detection/pi01/status` | STATUS_REPLY 状态 + 上线 "online" |
-| `fall_detection/pi01/cmd` | 下行指令（main.c 已订阅，转发未实现） |
+| `fall_detection/pi01/cmd` | 下行指令（main.c 已订阅：JSON → comm_pack_cmd → ble_write_enqueue → GATT Write 0xC302） |
 
 - **MQTT 服务器**：`121.40.252.238:1883`，用户 `flyzzz`，client id `pi01`。
 - 日志：`log_init("./isk_gateway.log")` 文件 + stderr，`LOG_INFO/WARN/ERROR`。
@@ -287,7 +294,7 @@ NORMAL ──(accel_sq < 70M)──▶ FREE_FALL
 ## USART
 
 - **USART1**（PA9/PA10, 115200）：printf 调试输出
-- **USART2**（PA2/PA3, 115200）：接 ESP32，IT 中断接收 → `HAL_UART_RxCpltCallback` → `ESP32_RX_Char(rx_byte)` 逐字喂入解析状态机
+- **USART2**（PA2/PA3, 115200）：接 ESP32，**轮询接收**（无中断，IRQ 优先级 15）——commTask 每轮调 `ESP32_RX_Poll()`（`while(RXNE)` 读 RDR → `ESP32_RX_Char()` → 清 ORE）。中断改轮询是防 UART 中断风暴的结构性方案，不回退。
 
 ## 代码规范
 
