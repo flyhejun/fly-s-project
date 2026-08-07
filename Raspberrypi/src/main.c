@@ -23,11 +23,9 @@
 #include "log.h"
 #include "comm_parse.h"
 #include "ble_write.h"
+#include "config.h"
 
-#define MQTT_HOST       "121.40.252.238"
 #define MQTT_PORT       1883
-#define MQTT_USERNAME   "flyzzz"
-#define MQTT_PASSWORD   "chanhjf17"
 #define DEVICE_ID       "pi01"
 
 #define TOPIC_CMD       "fall_detection/" DEVICE_ID "/cmd"
@@ -231,12 +229,12 @@ static struct mosquitto *mqtt_init(void)
         return NULL;
     }
 
-    mosquitto_username_pw_set(mosq, MQTT_USERNAME, MQTT_PASSWORD);
+    mosquitto_username_pw_set(mosq, g_cfg.username, g_cfg.password);
     mosquitto_connect_callback_set(mosq, on_connect);
     mosquitto_message_callback_set(mosq, on_message);
 
     /* 带重试的连接：mosquitto_loop_start 会持续尝试（底层自带重连） */
-    int rc = mosquitto_connect(mosq, MQTT_HOST, MQTT_PORT, 60);
+    int rc = mosquitto_connect(mosq, g_cfg.host, MQTT_PORT, 60);
     if (rc != MOSQ_ERR_SUCCESS)
     {
         LOG_WARN("MQTT 首次连接失败: %s，后台线程将继续重试", mosquitto_strerror(rc));
@@ -259,6 +257,9 @@ int main(void)
     /* 初始化日志 */
     log_init("./isk_gateway.log");
     LOG_INFO("ISKBoard 网关启动");
+
+    /* 加载配置（文件不存在则用默认值） */
+    Config_Load("./isk_gateway.conf");
 
     /* 1. MQTT：创建失败才退出（内存不足），连接失败后台重试 */
     g_mosq = mqtt_init();

@@ -5,3 +5,9 @@ build/
 *.bin
 *.hex
 *.log
+
+# Raspberrypi 网关真实配置（含密码，不入库）
+Raspberrypi/isk_gateway.conf
+# host 一致性测试二进制
+Raspberrypi/host_test/test_aes_sync
+Raspberrypi/host_test/*.exe

@@ -16,11 +16,10 @@
 #include "comm_parse.h"
 #include "mqtt_publish.h"
 #include "log.h"
+#include "config.h"
 
 /* MQTT 实例（main.c 中初始化） */
 extern struct mosquitto *g_mosq;
-
-#define TARGET_MAC "58:8c:81:0e:4e:16"
 
 /* ================================================================
  *  内部辅助
@@ -179,7 +178,7 @@ static void on_interfaces_added(GDBusConnection *connection,
                 const gchar *addr = g_variant_get_string(addr_variant, NULL);
                 LOG_INFO("发现设备: %s (%s)", addr, obj_path);
 
-                if (g_ascii_strcasecmp(addr, TARGET_MAC) == 0)
+                if (g_ascii_strcasecmp(addr, g_cfg.target_mac) == 0)
                 {
                     LOG_INFO("找到 ESP32，开始接收广播数据");
                     process_advertising_data(props);
@@ -255,7 +254,7 @@ static gboolean check_existing_devices(GDBusConnection *conn)
                 {
                     const gchar *addr = g_variant_get_string(addr_variant, NULL);
 
-                    if (g_ascii_strcasecmp(addr, TARGET_MAC) == 0)
+                    if (g_ascii_strcasecmp(addr, g_cfg.target_mac) == 0)
                     {
                         LOG_INFO("在缓存中找到目标: %s", obj_path);
                         process_advertising_data(props);

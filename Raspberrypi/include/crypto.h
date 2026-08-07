@@ -12,6 +12,13 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* ---- key / IV 常量（与 STM32 aes128.c 的 g_aes128_key/g_aes128_iv 逐字节一致） ---- */
+#define AES_KEY_LEN  16
+#define AES_IV_LEN   16
+
+extern const uint8_t g_key[AES_KEY_LEN];
+extern const uint8_t g_iv[AES_IV_LEN];
+
 /**
   * @brief  AES-128-CTR 加解密（CTR 对称，加解密共用）
   * @param  in   输入缓冲区

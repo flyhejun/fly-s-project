@@ -1,0 +1,10 @@
+# ISKBoard 网关配置模板
+# 复制为 isk_gateway.conf 后填写真实值（isk_gateway.conf 已在 .gitignore 中）
+# 格式：key=value，一行一个，# 开头是注释
+# 注意：等号两侧不要加空格（解析器按 "key=value" 精确前缀匹配）
+
+host=121.40.252.238
+port=1883
+username=<你的 MQTT 账号>
+password=<你的 MQTT 密码>
+target_mac=58:8c:81:0e:4e:16
