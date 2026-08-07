@@ -210,7 +210,7 @@ defaultTask (Normal, 512B)     空循环 1s delay
 ## 已知问题（待修）
 
 - **树莓派下行链路已实现、未实测（最高优先）**：`on_message` → `comm_pack_cmd` → `ble_write_enqueue` → GATT Write(0xC302) 全链路代码完成，但没在真实环境跑过。实测重点确认 ESP-AT 的 `+WRITE:` URC 实际格式（hex 字符串 / `<0xHH>` 序列 / 原始字节）与 STM32 `parse_write_urc` 兼容。
-- **硬编码**：MQTT 账号密码（main.c）、AES key/IV（两端）、ESP32 MAC（ble_central.c）均写死在源码。
+- **AES key/IV 仍两端硬编码**：STM32 `aes128.c` 的 `g_aes128_key/iv` 与 Pi `crypto.c` 的 `g_key/g_iv` 写死在源码（STM32 无文件系统，只能随固件）。MQTT 账号密码、ESP32 MAC 已外部化到 `isk_gateway.conf`。改动 key/IV 后跑 `host_test/test_aes_sync` 验证两端一致。
 - **ESP32_Send Fire & Forget**：不校验 `AT+BLEADVDATA` 是否执行成功，广播包丢包无感知（10Hz 吞吐的取舍）。
 - **`AT+SYSMSG=4` 待实测确认**：`+BLEDISCONN`（广播补发依赖）与 `+WRITE`（下行依赖）的 URC 显示受固件 SYSMSG 位控制；若实测发现广播不恢复或下行收不到，先查 SYSMSG 设置。
 
@@ -269,7 +269,8 @@ NORMAL ──(accel_sq < 70M)──▶ FREE_FALL
 ## 树莓派网关
 
 - **架构**：GLib GMainLoop（BlueZ D-Bus BLE 扫描事件）+ `mosquitto_loop_start`（MQTT 后台线程）双事件循环并存。MQTT 断连自动重试，BLE 扫描失败不退出。
-- **BLE 接收**（ble_central.c）：`StartDiscovery` 被动扫描，读 `ManufacturerData`（AD type 0xFF），匹配目标 MAC `58:8c:81:0e:4e:16`；订阅 `PropertiesChanged` 实时收新帧；`check_existing_devices` 兜底已缓存设备。
+- **配置**（config.c/h）：MQTT 账号密码、ESP32 目标 MAC 从 `isk_gateway.conf` 读取（key=value 纯文本，`#` 注释），启动时 `Config_Load()` 覆盖全局 `g_cfg`。文件缺失或 key 未出现 → 回退编译期默认值。**真实 conf 已 gitignore**，提交 `isk_gateway.conf.example` 作模板。格式注意：等号两侧无空格（`host=1.2.3.4`）。
+- **BLE 接收**（ble_central.c）：`StartDiscovery` 被动扫描，读 `ManufacturerData`（AD type 0xFF），匹配目标 MAC（`g_cfg.target_mac`）；订阅 `PropertiesChanged` 实时收新帧；`check_existing_devices` 兜底已缓存设备。
 - **帧解析**（comm_parse.c）：SOF/EOF/LEN 校验 → **先 CRC-8 校验密文** → AES-128-CTR 解密（openssl EVP）→ 按类型解析。与 STM32 `comm_protocol.c` 同步。
 - **MQTT 上传**（mqtt_publish.c）：`ParsedFrame_t` → JSON → 发布。
 
