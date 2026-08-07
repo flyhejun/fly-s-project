@@ -205,12 +205,11 @@ defaultTask (Normal, 512B)     空循环 1s delay
 | `s_event` | `static FallEvent_Data_t` | fallTask 逐帧写日期/accel/gyro，FALL_CONFIRMED 置 event_type，alarmTask 读取打包 |
 | `g_data_stream` | `volatile uint8_t` | 失重停传，误报超时/报警结束恢复 |
 | `g_alarm` | `volatile uint8_t` | 下行 ALARM_CANCEL 置位，alarm_routine 轮询取消 |
-| `g_date_*` / `g_time_synced` | static | TIME_SYNC 直接存储的日期时间 |
+| `g_date_*` | static | TIME_SYNC 直接存储的日期时间 |
 
 ## 已知问题（待修）
 
 - **树莓派下行链路已实现、未实测（最高优先）**：`on_message` → `comm_pack_cmd` → `ble_write_enqueue` → GATT Write(0xC302) 全链路代码完成，但没在真实环境跑过。实测重点确认 ESP-AT 的 `+WRITE:` URC 实际格式（hex 字符串 / `<0xHH>` 序列 / 原始字节）与 STM32 `parse_write_urc` 兼容。
-- **`g_time_synced` 是死标志**：TIME_SYNC 置位 1，但没有任何读取方。
 - **硬编码**：MQTT 账号密码（main.c）、AES key/IV（两端）、ESP32 MAC（ble_central.c）均写死在源码。
 - **ESP32_Send Fire & Forget**：不校验 `AT+BLEADVDATA` 是否执行成功，广播包丢包无感知（10Hz 吞吐的取舍）。
 - **`AT+SYSMSG=4` 待实测确认**：`+BLEDISCONN`（广播补发依赖）与 `+WRITE`（下行依赖）的 URC 显示受固件 SYSMSG 位控制；若实测发现广播不恢复或下行收不到，先查 SYSMSG 设置。

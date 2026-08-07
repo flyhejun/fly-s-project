@@ -68,7 +68,6 @@ static uint8_t  g_date_month;
 static uint8_t  g_date_day;
 static uint8_t  g_date_hour;
 static uint8_t  g_date_minute;
-static uint8_t  g_time_synced = 0;
 
 /* USER CODE END PM */
 
@@ -444,7 +443,6 @@ void commTask(void *argument)
                     g_date_day    = cmd.date.day;
                     g_date_hour   = cmd.date.hour;
                     g_date_minute = cmd.date.minute;
-                    g_time_synced = 1;
                     printf("[CMD] TIME_SYNC %04u-%02u-%02u %02u:%02u\n",
                            g_date_year, g_date_month, g_date_day,
                            g_date_hour, g_date_minute);
