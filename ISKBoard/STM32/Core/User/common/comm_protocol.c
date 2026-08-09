@@ -3,7 +3,7 @@
   * @file    comm_protocol.c
   * @brief   通信协议帧打包/解析实现
   *
-  * CRC 算法：从 SOF 到 PAYLOAD 末尾逐字节 XOR。
+  * CRC 算法：CRC-8/MAXIM (poly 0x31)，从 SOF 到 PAYLOAD 末尾逐字节计算（位反序）。
   *
   * 使用示例：
   *   FallEvent_Data_t event;

@@ -22,7 +22,7 @@ typedef struct
     char target_mac[20];  /* ESP32 BLE MAC   */
 } GatewayConfig_t;
 
-/* 全局配置实例（main.c 中定义并初始化默认值） */
+/* 全局配置实例（config.c 中定义并初始化默认值） */
 extern GatewayConfig_t g_cfg;
 
 /**

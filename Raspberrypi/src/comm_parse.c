@@ -4,7 +4,7 @@
   * @brief   Pi 端协议帧解析实现
   *
   * 帧格式（与 STM32 同步）：
-  *   SOF(0xAA) | TYPE | LEN(2B LE) | PAYLOAD(LEN 字节) | CRC(XOR) | EOF(0x55)
+  *   SOF(0xAA) | TYPE | LEN(2B LE) | PAYLOAD(LEN 字节) | CRC-8/MAXIM | EOF(0x55)
   ******************************************************************************
   */
 #include "comm_parse.h"

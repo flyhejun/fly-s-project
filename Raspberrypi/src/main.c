@@ -109,6 +109,12 @@ static void on_message(struct mosquitto *mosq, void *userdata,
             payload[4] = (uint8_t)((value->valueint >> 24) & 0xFF);
             
             plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 5);
+            if (plen <= 0)
+            {
+                LOG_ERROR("set_threshold 帧打包失败");
+                cJSON_Delete(root);
+                return;
+            }
             if(ble_write_enqueue(buf, plen) != 0)
             {
                 LOG_WARN("BLE 写入队列已满，丢弃指令");
@@ -121,6 +127,12 @@ static void on_message(struct mosquitto *mosq, void *userdata,
             memset(payload, 0, sizeof(payload));
             memset(buf, 0, sizeof(buf));
             plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 0);
+            if (plen <= 0)
+            {
+                LOG_ERROR("alarm_cancel 帧打包失败");
+                cJSON_Delete(root);
+                return;
+            }
             if(ble_write_enqueue(buf,plen) != 0)
             {
                 LOG_WARN("BLE 写入队列已满，丢弃指令");
@@ -141,11 +153,17 @@ static void on_message(struct mosquitto *mosq, void *userdata,
 
             payload[0] = (uint8_t)value->valueint;
             plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 1);
+            if (plen <= 0)
+            {
+                LOG_ERROR("test_led 帧打包失败");
+                cJSON_Delete(root);
+                return;
+            }
             if(ble_write_enqueue(buf,plen) != 0)
             {
                 LOG_WARN("BLE 写入队列已满，丢弃指令");
             }
-        }   
+        }
         else if(strcasecmp(cmd->valuestring, "test_buzzer") == 0)
         {
             type = 0x85;
@@ -160,6 +178,12 @@ static void on_message(struct mosquitto *mosq, void *userdata,
 
             payload[0] = (uint8_t)value->valueint;
             plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 1);
+            if (plen <= 0)
+            {
+                LOG_ERROR("test_buzzer 帧打包失败");
+                cJSON_Delete(root);
+                return;
+            }
             if(ble_write_enqueue(buf,plen) != 0)
             {
                 LOG_WARN("BLE 写入队列已满，丢弃指令");
@@ -181,6 +205,12 @@ static void on_message(struct mosquitto *mosq, void *userdata,
             payload[5] = (uint8_t)(t->tm_min);
 
             plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 6);
+            if (plen <= 0)
+            {
+                LOG_ERROR("time_sync 帧打包失败");
+                cJSON_Delete(root);
+                return;
+            }
             if(ble_write_enqueue(buf, plen) != 0)
             {
                 LOG_WARN("BLE 写入队列已满，丢弃指令");
@@ -194,6 +224,12 @@ static void on_message(struct mosquitto *mosq, void *userdata,
             memset(payload, 0, sizeof(payload));
             memset(buf, 0, sizeof(buf));
             plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 0);
+            if (plen <= 0)
+            {
+                LOG_ERROR("query_status 帧打包失败");
+                cJSON_Delete(root);
+                return;
+            }
             if(ble_write_enqueue(buf,plen) != 0)
             {
                 LOG_WARN("BLE 写入队列已满，丢弃指令");
