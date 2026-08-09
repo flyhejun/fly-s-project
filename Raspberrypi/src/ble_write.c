@@ -14,17 +14,13 @@
   */
 #include "ble_write.h"
 #include "log.h"
+#include "config.h"
 #include <gio/gio.h>
 #include <pthread.h>
 #include <string.h>
 #include <unistd.h>
 
 /* ---- 常量 ---- */
-#define TARGET_MAC  "58:8c:81:0e:4e:16"
-
-/* BlueZ 设备对象路径：MAC 大写，冒号变下划线 */
-#define DEVICE_PATH "/org/bluez/hci0/dev_58_8C_81_0E_4E_16"
-
 /* 16-bit UUID 0xC302 → 128-bit Bluetooth Base UUID */
 #define CHAR_UUID   "0000c302-0000-1000-8000-00805f9b34fb"
 
@@ -50,6 +46,7 @@ static volatile int     g_running = 0;
 
 /* ---- 前置声明 ---- */
 static void ble_gatt_write(const uint8_t *frame, size_t len);
+static void ble_device_path(char *mac, size_t mac_len, char *out);
 
 /* ================================================================
  *  GATT 写入核心（工作线程内执行，同步阻塞）
@@ -67,14 +64,18 @@ static void ble_gatt_write(const uint8_t *frame, size_t len)
     GDBusProxy *om_proxy     = NULL;
     GVariant   *result       = NULL;
     gchar      *char_path    = NULL;
+    char        device_path[64];
     int         i;
 
-    LOG_INFO("[GATT] 开始连接 %s ...", TARGET_MAC);
+    LOG_INFO("[GATT] 开始连接 %s ...", g_cfg.target_mac);
+
+    /* 由配置 MAC 构造 BlueZ 设备路径（大写、下划线） */
+    ble_device_path(g_cfg.target_mac, strlen(g_cfg.target_mac), device_path);
 
     /* ---- 1. 创建设备代理 ---- */
     device_proxy = g_dbus_proxy_new_sync(
         g_conn, G_DBUS_PROXY_FLAGS_NONE, NULL,
-        "org.bluez", DEVICE_PATH, "org.bluez.Device1",
+        "org.bluez", device_path, "org.bluez.Device1",
         NULL, &error);
 
     if (error)
@@ -275,6 +276,36 @@ static void *ble_write_thread(void *arg)
     }
 
     return NULL;
+}
+
+static void ble_device_path(char *mac, size_t mac_len, char *out)
+{
+    uint8_t     i;
+    char        path[64] = "/org/bluez/hci0/dev_";
+    uint8_t     path_len = strlen(path);
+
+    for(i = 0; i < mac_len; i++)
+    {
+        if(mac[i] == ':')
+        {
+            path[path_len] = '_';
+        }
+        else if(mac[i] >= 'a' && mac[i] <= 'f')
+        {
+            path[path_len] = mac[i] - 'a' + 'A';
+        }
+        else
+        {
+            path[path_len] = mac[i];
+        }
+
+        path_len += 1;
+    }
+
+    strncpy(out, path, 63);
+    out[63] =  '\0';
+
+    return ;
 }
 
 int ble_write_enqueue(const uint8_t *frame, size_t len)
