@@ -41,85 +41,229 @@ static volatile uint8_t rx_frame_tail;      /* 读索引（任务） */
 static int  uart2_send(const uint8_t *buf, uint16_t len);
 static int  uart2_poll_byte(uint8_t *ch);
 static void uart2_flush(void);
+static int  send_at_cmd_ex(const char *cmd, uint32_t timeout_ms,
+                           char *out, int out_size);
 static int  send_at_cmd(const char *cmd, uint32_t timeout_ms);
 static void parse_ble_status(const char *line);
 static void parse_write_urc(const char *line);
 static int  hex_to_bytes(const char *hex, uint8_t *out, uint16_t max_len);
 
 /* ================================================================
- *  BLE 初始化 — AT 命令轮询模式
+ *  BLE 初始化 — 状态机（每步含 OK 验证 + 重试 + 恢复路径）
  * ================================================================ */
 
-/* BLE 初始化 AT 命令链表（可连接广播 + GATT Server）
- *
- * 广播包走实时数据（上行，树莓派免连接接收）；
- * GATT Server 提供可写特征值 0xC302（下行，树莓派按需连接写指令）。
+/* ---- 状态定义 ----
+ * 每次启动先 AT+RESTORE 清空 NVS——实测：NVS 空时完整初始化安全（全 OK），
+ * NVS 有旧配置时任何重建操作（BLEINIT/GATT/ADV）都会触发 ESP32 崩溃。
+ * 所以先清再初始化，保证总是从干净状态开始。
  */
-static const char *at_sequence[] = {
-    "AT",                        /* 测试 ESP32 是否在线         */
-    "AT+SYSMSG=4",               /* 开连接状态 URC（+BLEDISCONN 触发广播补发） */
-    "AT+BLEINIT=2",              /* 初始化为 BLE Server         */
-    "AT+BLENAME=\"FallSensor\"",     /* 设置 BLE 广播名             */
-    "AT+BLEGATTSSRVCRE",         /* 创建 GATT 服务               */
-    "AT+BLEGATTSSRVSTART",       /* 启动 GATT 服务              */
-    "AT+BLEADVPARAM=160,160,0,0,7",  /* 广播参数 type=0 可连接  */
-    "AT+BLEADVSTART",            /* 开始 BLE 广播               */
-};
+typedef enum {
+    BLE_S_RESTORE = 0,      /* AT+RESTORE 清 NVS */
+    BLE_S_WAIT_READY,       /* 循环发 AT 检测 ESP32 ready（重启完成） */
+    BLE_S_BLEINIT,          /* AT+BLEINIT=2（必须 OK，长超时不重试） */
+    BLE_S_BLENAME,          /* AT+BLENAME="FallSensor"（可 SKIP） */
+    BLE_S_GATTCREATE,       /* AT+BLEGATTSSRVCRE（可 SKIP） */
+    BLE_S_GATTSTART,        /* AT+BLEGATTSSRVSTART（可 SKIP） */
+    BLE_S_ADVPARAM,         /* AT+BLEADVPARAM=160,160,0,0,7（可 SKIP） */
+    BLE_S_ADVSTART,         /* 起广播（必须 OK：带新数据） */
+    BLE_S_READY,            /* 初始化完成 */
+    BLE_S_FAILED,           /* 初始化失败（等待重试） */
+} BLE_State_t;
 
-#define AT_CMD_COUNT  (sizeof(at_sequence) / sizeof(at_sequence[0]))
+/* ---- 状态机全局 ---- */
+static BLE_State_t g_ble_state       = BLE_S_RESTORE;
+static int         g_ble_retry       = 0;
+static uint32_t    g_ble_wait_tick   = 0;  /* WAIT_READY 起始时间戳 */
+
+/* AT+BLEADVDATA 运行时错误计数（由 RX ERROR 行触发） */
+volatile uint8_t g_ble_advdata_err   = 0;
+
 #define AT_MAX_RETRY  3
 #define AT_TIMEOUT_MS 1000
+#define BLEINIT_TIMEOUT_MS 5000   /* BLEINIT 初始化 BLE 栈耗时较长 */
+
+/* 每个状态对应的 AT 命令（BLE_S_RESTORE/INIT/READY/FAILED 无命令） */
+static const char *state_cmd[] = {
+    [BLE_S_BLEINIT]    = "AT+BLEINIT=2",
+    [BLE_S_BLENAME]    = "AT+BLENAME=\"FallSensor\"",
+    [BLE_S_GATTCREATE] = "AT+BLEGATTSSRVCRE",
+    [BLE_S_GATTSTART]  = "AT+BLEGATTSSRVSTART",
+    [BLE_S_ADVPARAM]   = "AT+BLEADVPARAM=160,160,0,0,7",
+    [BLE_S_ADVSTART]   = "AT+BLEADVSTART",
+};
+
+/* 每状态超时：GATT 创建/启动、广播启动耗时较长，超时太短会误判失败，
+ * 立即发下一条导致 ESP32 处理堆积卡死（手动测试不会因为人在等） */
+static const uint32_t state_timeout[] = {
+    [BLE_S_BLEINIT]    = 6000,
+    [BLE_S_BLENAME]    = 6000,
+    [BLE_S_GATTCREATE] = 6000,
+    [BLE_S_GATTSTART]  = 6000,
+    [BLE_S_ADVPARAM]   = 6000,
+    [BLE_S_ADVSTART]   = 6000,
+};
+
+/* 允许容错继续的状态：BLENAME/GATTCREATE/GATTSTART 返回 ERROR → SKIP 沿用。
+ * BLEINIT 和 ADVSTART 不在列表 → 必须 OK。 */
+static int state_allow_skip(BLE_State_t s)
+{
+    switch (s)
+    {
+        case BLE_S_BLENAME:
+        case BLE_S_GATTCREATE:
+        case BLE_S_GATTSTART:
+        case BLE_S_ADVPARAM:
+            return 1;
+        default:
+            return 0;
+    }
+}
 
 /**
-  * @brief  ESP32 BLE 初始化（阻塞）
+  * @brief  BLE 初始化状态机 — 每轮推进一步
   *
-  * 执行流程：
-  *   1. 等 ESP32 上电启动
-  *   2. 清空 ESP32 可能发出的启动信息
-  *   3. 依次发送 AT 命令，每条最多重试 3 次
-  *
-  * @note  应在 RTOS 任务中调用（依赖 osDelay/HAL_GetTick）
-  *         全程轮询（无中断接收），成功后 g_ble_ready=1。
+  * commTask 每 100ms 调用一次，每一步发送一条 AT 命令并等待 OK。
+  * 序列：RESTORE → AT → BLEINIT=2 → BLENAME → GATTCREATE → GATTSTART → ADVSTART。
+  *  - 先 AT+RESTORE 清 NVS（NVS 空时初始化才安全，有旧配置会崩）
+  *  - BLEINIT/ADVSTART 必须 OK；BLENAME/GATTCREATE/GATTSTART 可 SKIP
+  *  - 失败进 FAILED，30 秒低频重试（ESP32 崩溃后重试无意义，靠断电/RESTORE 恢复）
   */
-BLE_Init_Status_t ESP32_Init_BLE(void)
+void ESP32_Init_BLE_Step(void)
 {
-    int i, retry;
     int ok;
 
-    /* 1. 等 ESP32 上电启动 */
-    HAL_Delay(1000);
-
-    /* 2. 清空残留 */
-    uart2_flush();
-
-    /* 3. 执行 AT 命令序列 */
-    for (i = 0; i < (int)AT_CMD_COUNT; i++)
+    /* ---- 就绪 / 失败 态不做事 ---- */
+    if (g_ble_state == BLE_S_READY)
     {
-        ok = 0;
-        for (retry = 0; retry < AT_MAX_RETRY; retry++)
+        g_ble_ready = 1;
+        return;
+    }
+    if (g_ble_state == BLE_S_FAILED)
+    {
+        /* ESP32 崩溃后重试无意义（硬件级卡死），低频重试 + 提示 */
+        static uint32_t s_fail_tick = 0;
+        if (s_fail_tick == 0) s_fail_tick = HAL_GetTick();
+        if (HAL_GetTick() - s_fail_tick > 30000)
         {
-            ok = send_at_cmd(at_sequence[i], AT_TIMEOUT_MS);
-            if (ok) break;
+            s_fail_tick = 0;
+            g_ble_state = BLE_S_RESTORE;   /* 30 秒后重来（含 RESTORE） */
+            printf("[ESP32] retry (30s)...\n");
         }
-
-        if (!ok)
-        {
-            /* 仅 AT 连通性失败才中断；其余命令可能因 ESP32 已配置而报错，容错继续 */
-            if (i == 0) {
-                printf("[ESP32] AT FAIL: %s (no response)\n", at_sequence[i]);
-                g_ble_ready = 0;
-                return BLE_INIT_FAIL;
-            }
-            printf("[ESP32] AT WARN: %s (already set, continue)\n", at_sequence[i]);
-            continue;
-        }
-        printf("[ESP32] AT OK: %s\n", at_sequence[i]);
+        g_ble_ready = 0;
+        return;
     }
 
-    g_ble_ready = 1;
+    /* ---- RESTORE 态：清 NVS，触发 ESP32 重启 ---- */
+    if (g_ble_state == BLE_S_RESTORE)
+    {
+        send_at_cmd("AT+RESTORE", 6000);   /* 回显截断正常——命令触发重启 */
+        uart2_flush();                      /* 清重启期间的启动信息 */
+        g_ble_wait_tick = HAL_GetTick();
+        g_ble_state = BLE_S_WAIT_READY;
+        g_ble_ready = 0;
+        printf("[ESP32] RESTORE issued, waiting ESP32 ready...\n");
+        return;
+    }
 
-    printf("[ESP32] BLE initialized successfully\n");
-    return BLE_INIT_OK;
+    /* ---- WAIT_READY：循环发 AT，检测 ESP32 重启完成（不等死固定时间） ---- */
+    if (g_ble_state == BLE_S_WAIT_READY)
+    {
+        if (HAL_GetTick() - g_ble_wait_tick > 30000)
+        {
+            printf("[ESP32] ESP32 not ready in 30s\n");
+            g_ble_state = BLE_S_FAILED;
+            g_ble_ready = 0;
+            return;
+        }
+        if (send_at_cmd("AT", AT_TIMEOUT_MS) == 1)
+        {
+            printf("[ESP32] ESP32 ready after %lums\n",
+                   (unsigned long)(HAL_GetTick() - g_ble_wait_tick));
+            g_ble_state = BLE_S_BLEINIT;    /* 已确认 ready，直接初始化 */
+            g_ble_retry = 0;
+            g_ble_ready = 0;
+            return;
+        }
+        HAL_Delay(2000);   /* 还没 ready，等 2 秒再试 */
+        g_ble_ready = 0;
+        return;
+    }
+
+    /* ---- BLEINIT 特殊处理：长超时 + 不重试（栈活着时重复会搞死 ESP32） ---- */
+    if (g_ble_state == BLE_S_BLEINIT)
+    {
+        ok = send_at_cmd("AT+BLEINIT=2", BLEINIT_TIMEOUT_MS);
+        if (ok)
+        {
+            printf("[ESP32] OK: AT+BLEINIT=2\n");
+            g_ble_state++;
+            g_ble_retry = 0;
+        }
+        else
+        {
+            printf("[ESP32] FAIL: AT+BLEINIT=2 -> 请整板断电重启后启动\n");
+            g_ble_state = BLE_S_FAILED;
+        }
+        g_ble_ready = 0;
+        return;
+    }
+
+    /* ---- 通用命令状态：发 AT 指令，等 OK ---- */
+    if (g_ble_state >= BLE_S_READY)
+        return;   /* 越界保护：不应走到这里 */
+
+    ok = send_at_cmd(state_cmd[g_ble_state], state_timeout[g_ble_state]);
+
+    if (ok == 1)   /* OK */
+    {
+        printf("[ESP32] OK: %s\n", state_cmd[g_ble_state]);
+        g_ble_retry = 0;
+        g_ble_state++;
+
+        if (g_ble_state == BLE_S_READY)
+        {
+            g_ble_ready = 1;
+            printf("[ESP32] BLE initialized successfully\n");
+        }
+    }
+    else if (ok == 0)   /* ERROR：有响应，ESP32 活着 */
+    {
+        if (state_allow_skip(g_ble_state))
+        {
+            /* 已配置命令返回 ERROR（如 already set）→ 沿用现有配置 */
+            printf("[ESP32] SKIP: %s (not needed, continue)\n", state_cmd[g_ble_state]);
+            g_ble_retry = 0;
+            g_ble_state++;
+        }
+        else
+        {
+            g_ble_retry++;
+            printf("[ESP32] FAIL: %s (retry %d/%d)\n",
+                   state_cmd[g_ble_state], g_ble_retry, AT_MAX_RETRY);
+            if (g_ble_retry >= AT_MAX_RETRY)
+                g_ble_state = BLE_S_FAILED;
+        }
+    }
+    else   /* ok == -1：无响应，ESP32 崩溃——重试无意义，直接失败 */
+    {
+        printf("[ESP32] FAIL: %s (no response, ESP32 down)\n",
+               state_cmd[g_ble_state]);
+        g_ble_state = BLE_S_FAILED;
+    }
+
+    g_ble_ready = 0;
+}
+
+/**
+  * @brief  重置 BLE 状态机到 INIT，触发重新初始化
+  * @note   运行时报错（如 ADVDA 连续失败）时由 commTask 调用。
+  *         从 RESTORE（清 NVS）开始重新初始化。
+  */
+void ESP32_Reset_BLE(void)
+{
+    g_ble_state     = BLE_S_RESTORE;   /* 重初始化从清 NVS 开始 */
+    g_ble_retry     = 0;
+    g_ble_ready     = 0;
 }
 
 /* ================================================================
@@ -129,11 +273,13 @@ BLE_Init_Status_t ESP32_Init_BLE(void)
 /**
   * @brief  发数据帧（通过 AT+BLEADVDATA 更新广播包）
   *
-  * 数据包装格式（BLE AD Structure）：
-  *   [Flags: 02 01 06] [MfgData: len FF FF FF] [帧数据 SOF...EOF]
-  *   ── 3B ──────────   ── 4B ──────────────   ── 7~21B ─────
+  * 数据包装格式（BLE AD Structure，31 字节预算内）：
+  *   [Flags: 02 01 06] [Name: 02 09 "f"] [Mfg: len FF E5 02] [帧 SOF...EOF]
+  *   ── 3B ──────────   ── 3B ─────────   ── 4B ───────────  ── 7~21B ──
   *
-  * 最长帧 21B + 7B 开销 = 28B，HEX 编码后 56 字符，符合 31 字节限制。
+  * 短名占位：广播数据自带 Name → ESP32 不再自动加 "Espressif"(13B)，
+  * 否则 Name+Mfg 超 31B 上限，Mfg 被截断、Pi 收不到数据。
+  * 最长帧 21B + 10B 开销 = 31B，恰好满广播上限。
   * 采用 Fire & Forget 模式（不等待 OK），保证 10Hz 实时数据吞吐。
   */
 void ESP32_Send(const uint8_t *buf, uint16_t len)
@@ -151,11 +297,15 @@ void ESP32_Send(const uint8_t *buf, uint16_t len)
     ad[ad_len++] = 0x01;   /* AD Type: Flags */
     ad[ad_len++] = 0x06;   /* LE General Discoverable */
 
+    /* Short Name AD: "f" 占位，防 ESP32 自动加 "Espressif" 挤爆 31B */
+    ad[ad_len++] = 0x02;   /* 长度 = 1(type) + 1(字符) */
+    ad[ad_len++] = 0x09;   /* AD Type: Complete Local Name */
+    ad[ad_len++] = 'f';
     /* Manufacturer Data AD（含帧数据） */
     ad[ad_len++] = len + 3;      /* 长度 = 1(type) + 2(mfg_id) + len */
     ad[ad_len++] = 0xFF;         /* AD Type: Manufacturer Specific Data */
-    ad[ad_len++] = 0xFF;         /* Company ID low  (0xFFFF = 测试用) */
-    ad[ad_len++] = 0xFF;         /* Company ID high */
+    ad[ad_len++] = 0xE5;         /* Company ID low  (0x02E5 = Espressif 官方, 小端) */
+    ad[ad_len++] = 0x02;         /* Company ID high */
     memcpy(&ad[ad_len], buf, len);
     ad_len += len;
 
@@ -242,6 +392,21 @@ void ESP32_RX_Char(uint8_t ch)
             if (rx_pos > 0)
             {
                 rx_line[rx_pos++] = '\0';
+
+                /* 诊断：ESP32 的一切非 URC 响应（OK/ERROR/其他） */
+                if (strstr(rx_line, "ERROR"))
+                {
+                    printf("[ESP32 RX] ERROR: %s\n", rx_line);
+                    g_ble_advdata_err = 1;  /* 通知 CommTask：ADV 数据更新可能失败了 */
+                }
+                else if (strstr(rx_line, "OK"))
+                    ;   /* OK 静默，避免刷屏 */
+                else if (strstr(rx_line, "AT") == NULL
+                      && strstr(rx_line, "+WRITE") == NULL
+                      && strstr(rx_line, "+BLEDISCONN") == NULL
+                      && rx_line[0] != '\0')
+                    printf("[ESP32 RX] %s\n", rx_line);
+
                 parse_ble_status(rx_line);
                 parse_write_urc(rx_line);   /* +WRITE URC → 下行指令帧 */
             }
@@ -453,7 +618,10 @@ void ESP32_CheckAdvStatus(void)
     if (g_ble_adv_status)
     {
         g_ble_adv_status = 0;
-        uart2_send((const uint8_t *)"AT+BLEADVSTART\r\n", 16);
+
+        /* 同步等待 OK/ERROR：响应被本函数消费，不会进 RX 解析器，
+           避免「恢复广播的 ERROR」被误记为 ADVDA 失败 */
+        send_at_cmd("AT+BLEADVSTART", 500);
     }
 }
 
@@ -472,14 +640,20 @@ static int uart2_send(const uint8_t *buf, uint16_t len)
   * @param  ch  输出：读取到的字节
   * @retval 1  成功
   *         0  暂无数据
+  * @note   每次读都清 ORE——ESP32 重启瞬间 UART 引脚噪声会触发 ORE，
+  *         不清则 USART 接收卡死，后续命令全无响应。
   */
 static int uart2_poll_byte(uint8_t *ch)
 {
     if (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_RXNE))
     {
         *ch = (uint8_t)(huart2.Instance->RDR & 0xFF);
+        if (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_ORE))
+            __HAL_UART_CLEAR_OREFLAG(&huart2);
         return 1;
     }
+    if (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_ORE))
+        __HAL_UART_CLEAR_OREFLAG(&huart2);
     return 0;
 }
 
@@ -492,25 +666,42 @@ static void uart2_flush(void)
 }
 
 /**
-  * @brief  发送 AT 命令并等待 OK/ERROR 响应
+  * @brief  发送 AT 命令并等待响应（可取出完整响应内容）
   * @param  cmd         AT 命令字符串（不含 \r\n）
   * @param  timeout_ms  单条响应等待时间（毫秒）
-  * @retval 1  收到 OK
-  *         0  超时或收到 ERROR
+  * @param  out         输出：完整响应文本（可为 NULL）
+  * @param  out_size    out 缓冲区大小
+  * @retval 1   收到 OK
+  *         0   有响应但非 OK（ERROR 等）
+  *         -1  无响应（ESP32 崩溃/未 ready）
   */
-static int send_at_cmd(const char *cmd, uint32_t timeout_ms)
+static int send_at_cmd_ex(const char *cmd, uint32_t timeout_ms,
+                          char *out, int out_size)
 {
     uint8_t  ch;
     uint32_t start;
-    int      found_ok = 0;
-    char     buf[256];
+    char     buf[256];      /* 响应收集缓冲 */
+    char     txbuf[128];    /* 发送缓冲（命令+\r\n 一次发出） */
     int      pos = 0;
+    int      tx_hal;
+    int      cmd_len;
 
-    /* 发送命令 */
-    uart2_send((const uint8_t *)cmd, strlen(cmd));
-    uart2_send((const uint8_t *)"\r\n", 2);
+    cmd_len = strlen(cmd);
 
-    /* 收集响应（超时内所有字节） */
+    /* 发送命令：命令 + \r\n 一次发出，避免两次发送之间的间隙被 ESP32 误处理 */
+    if (cmd_len + 2 < (int)sizeof(txbuf))
+    {
+        memcpy(txbuf, cmd, cmd_len);
+        txbuf[cmd_len]     = '\r';
+        txbuf[cmd_len + 1] = '\n';
+        tx_hal = uart2_send((const uint8_t *)txbuf, cmd_len + 2);
+    }
+    else
+    {
+        tx_hal = -1;   /* 命令过长 */
+    }
+
+    /* 收集响应：ESP 有回复（OK/ERROR）就判断；无回复则等满超时兜底 */
     memset(buf, 0, sizeof(buf));
     start = HAL_GetTick();
     while ((HAL_GetTick() - start) < timeout_ms)
@@ -519,12 +710,38 @@ static int send_at_cmd(const char *cmd, uint32_t timeout_ms)
         {
             if (pos < (int)sizeof(buf) - 1)
                 buf[pos++] = (char)ch;
+
+            if (strstr(buf, "OK") != NULL || strstr(buf, "ERROR") != NULL)
+                break;   /* ESP 已回复，判断 */
         }
     }
 
-    /* 检查是否收到 OK */
+    /* 判断响应：OK / ERROR（有响应） / none（无响应） */
     if (strstr(buf, "OK") != NULL)
-        found_ok = 1;
+    {
+        if (out && out_size > 0)
+        {
+            strncpy(out, buf, out_size - 1);
+            out[out_size - 1] = '\0';
+        }
+        return 1;   /* OK */
+    }
 
-    return found_ok;
+    if (pos > 0)
+    {
+        printf("[UART2] TX=%d len=%d wait=%lums/%lums resp=%d bytes: %s\n",
+               tx_hal, cmd_len, (unsigned long)(HAL_GetTick() - start),
+               (unsigned long)timeout_ms, pos, buf);
+        return 0;   /* 有响应但非 OK（ERROR） */
+    }
+
+    printf("[UART2] TX=%d len=%d wait=%lums/%lums resp=0 (no response)\n",
+           tx_hal, cmd_len, (unsigned long)(HAL_GetTick() - start),
+           (unsigned long)timeout_ms);
+    return -1;      /* 无响应 */
+}
+
+static int send_at_cmd(const char *cmd, uint32_t timeout_ms)
+{
+    return send_at_cmd_ex(cmd, timeout_ms, NULL, 0);
 }

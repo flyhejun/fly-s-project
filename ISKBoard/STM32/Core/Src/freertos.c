@@ -375,16 +375,29 @@ void commTask(void *argument)
 
   /* USER CODE BEGIN commTask */
 
-  /* 初始化 ESP32 BLE（阻塞，失败不影响继续运行；未就绪则 g_ble_ready=0） */
-  ESP32_Init_BLE();
-
   for (;;)
   {
-    /* BLE 未就绪：跳过所有 ESP32 操作 */
+    /* BLE 未就绪：推状态机 + 等就绪 */
     if (!g_ble_ready)
     {
+        ESP32_Init_BLE_Step();
         osDelay(100);
         continue;
+    }
+
+    /* AT+BLEADVDATA 连续失败 → 触发重初始化 */
+    if (g_ble_advdata_err)
+    {
+        static uint8_t s_err_cnt = 0;
+        g_ble_advdata_err = 0;
+        s_err_cnt++;
+        if (s_err_cnt >= 5)
+        {
+            printf("[COMM] ADVDATA err x5, reinit BLE\n");
+            s_err_cnt = 0;
+            ESP32_Reset_BLE();   /* 重置状态机到 INIT，真正重初始化 */
+            continue;
+        }
     }
 
     /* 轮询接收下行指令（无中断，结构性避免风暴） */
@@ -393,11 +406,10 @@ void commTask(void *argument)
     /* 100ms 节拍：等待事件帧最多 100ms（超时即到 10Hz 周期） */
     if (osMessageQueueGet(commEventQueueHandle, &msg, NULL, 100) == osOK)
     {
+        /* 事件帧到达：本周期让位，不发实时帧，避免双 ADVDA */
         ESP32_Send(msg.data, msg.len);
     }
-
-    /* 10Hz 实时数据（上传使能时） */
-    if (g_data_stream)
+    else if (g_data_stream)
     {
         date.year   = g_date_year;
         date.month  = g_date_month;
@@ -408,6 +420,14 @@ void commTask(void *argument)
                                    FallDetect_GetAccelSq(),
                                    FallDetect_GetGyroSq());
         ESP32_Send(tx_buf, tx_len);
+
+        /* 诊断：每 100 帧（10 秒）打一次发送计数 */
+        {
+            static uint32_t s_send_cnt = 0;
+            if (++s_send_cnt % 100 == 0)
+                printf("[COMM] sent %lu frames, accel_sq=%lu\n",
+                       s_send_cnt, FallDetect_GetAccelSq());
+        }
     }
 
     /* 处理下行指令帧 */
