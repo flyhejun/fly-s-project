@@ -316,8 +316,12 @@ void ble_start(GDBusConnection *conn)
         G_DBUS_SIGNAL_FLAGS_NONE,
         on_interfaces_added, NULL, NULL);
 
-    /* 2.5 设置扫描过滤：Transport=le 绕开 BR/EDR 交错，提高 LE 扫描占空比 */
+    /* 2.5 确保没残留扫描，然后设过滤：纯 LE + 不丢重复包 */
     {
+        /* 先停掉可能的旧扫描（忽略返回/错误） */
+        g_dbus_proxy_call_sync(adapter, "StopDiscovery",
+            NULL, G_DBUS_CALL_FLAGS_NONE, 2000, NULL, NULL);
+
         GVariant *filter = g_variant_new_parsed(
             "{'Transport': <'le'>, 'DuplicateData': <false>}");
         result = g_dbus_proxy_call_sync(
@@ -341,7 +345,7 @@ void ble_start(GDBusConnection *conn)
     result = g_dbus_proxy_call_sync(
                 adapter, "StartDiscovery",
                 NULL, G_DBUS_CALL_FLAGS_NONE,
-                -1, NULL, &error);
+                10000, NULL, &error);
 
     if (error)
     {
