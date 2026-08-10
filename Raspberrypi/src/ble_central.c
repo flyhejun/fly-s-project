@@ -43,12 +43,12 @@ static gboolean poll_manufacturer_data(gpointer user_data)
 {
     GDBusProxy *dev_proxy;
     GVariant   *props;
+    static int  tick = 0;
     (void)user_data;
 
     if (g_dev_path[0] == '\0')
         return G_SOURCE_CONTINUE;
 
-    /* 每次新建临时代理读缓存属性（GLib 内部有引用计数，不会反复建连接） */
     dev_proxy = g_dbus_proxy_new_sync(
         g_dev_conn, G_DBUS_PROXY_FLAGS_NONE, NULL,
         "org.bluez", g_dev_path, "org.bluez.Device1",
@@ -59,14 +59,21 @@ static gboolean poll_manufacturer_data(gpointer user_data)
         props = g_dbus_proxy_get_cached_property(dev_proxy, "ManufacturerData");
         if (props)
         {
-            /* 包装一层模拟 PropertiesChanged 的 a{sv} 格式 */
             GVariant *wrapper = g_variant_new_parsed(
                 "{'ManufacturerData': %@}", props);
             process_advertising_data(wrapper);
             g_variant_unref(wrapper);
             g_variant_unref(props);
         }
+        else if (++tick % 20 == 1)
+        {
+            LOG_INFO("[POLL] ManufacturerData 缓存为空 (tick=%d)", tick);
+        }
         g_object_unref(dev_proxy);
+    }
+    else if (++tick % 20 == 1)
+    {
+        LOG_WARN("[POLL] 设备代理创建失败: %s", g_dev_path);
     }
 
     return G_SOURCE_CONTINUE;
