@@ -21,6 +21,57 @@
 /* MQTT 实例（main.c 中初始化） */
 extern struct mosquitto *g_mosq;
 
+/* 找到 ESP32 后用于定时轮询 ManufacturerData */
+static GDBusConnection *g_dev_conn = NULL;
+static char             g_dev_path[128];
+
+/* ---- 前置声明 ---- */
+static void process_advertising_data(GVariant *props);
+
+/* ================================================================
+ *  定时轮询 ManufacturerData
+ * ================================================================ */
+
+/**
+  * @brief  GLib 定时回调：读缓存属性 → 解析帧
+  *
+  * 由于 BlueZ 默认 DuplicateData=true，后续广播更新不触发
+  * PropertiesChanged。这里用定时轮询绕过该限制，直接从
+  * Device1 缓存属性读取 ManufacturerData。
+  */
+static gboolean poll_manufacturer_data(gpointer user_data)
+{
+    GDBusProxy *dev_proxy;
+    GVariant   *props;
+    (void)user_data;
+
+    if (g_dev_path[0] == '\0')
+        return G_SOURCE_CONTINUE;
+
+    /* 每次新建临时代理读缓存属性（GLib 内部有引用计数，不会反复建连接） */
+    dev_proxy = g_dbus_proxy_new_sync(
+        g_dev_conn, G_DBUS_PROXY_FLAGS_NONE, NULL,
+        "org.bluez", g_dev_path, "org.bluez.Device1",
+        NULL, NULL);
+
+    if (dev_proxy)
+    {
+        props = g_dbus_proxy_get_cached_property(dev_proxy, "ManufacturerData");
+        if (props)
+        {
+            /* 包装一层模拟 PropertiesChanged 的 a{sv} 格式 */
+            GVariant *wrapper = g_variant_new_parsed(
+                "{'ManufacturerData': %@}", props);
+            process_advertising_data(wrapper);
+            g_variant_unref(wrapper);
+            g_variant_unref(props);
+        }
+        g_object_unref(dev_proxy);
+    }
+
+    return G_SOURCE_CONTINUE;
+}
+
 /* ================================================================
  *  内部辅助
  * ================================================================ */
@@ -183,6 +234,15 @@ static void on_interfaces_added(GDBusConnection *connection,
                     LOG_INFO("找到 ESP32，开始接收广播数据");
                     process_advertising_data(props);
                     watch_device(connection, obj_path);
+
+                    /* 第一次命中的话启动定时轮询 ManufacturerData */
+                    if (g_dev_path[0] == '\0')
+                    {
+                        g_dev_conn = connection;
+                        strncpy(g_dev_path, obj_path, sizeof(g_dev_path) - 1);
+                        g_timeout_add(500, poll_manufacturer_data, NULL);
+                        LOG_INFO("启动 ManufacturerData 轮询 (500ms)");
+                    }
                 }
 
                 g_variant_unref(addr_variant);
@@ -259,6 +319,14 @@ static gboolean check_existing_devices(GDBusConnection *conn)
                         LOG_INFO("在缓存中找到目标: %s", obj_path);
                         process_advertising_data(props);
                         watch_device(conn, obj_path);
+
+                        if (g_dev_path[0] == '\0')
+                        {
+                            g_dev_conn = conn;
+                            strncpy(g_dev_path, obj_path, sizeof(g_dev_path) - 1);
+                            g_timeout_add(500, poll_manufacturer_data, NULL);
+                            LOG_INFO("启动 ManufacturerData 轮询 (500ms)");
+                        }
                         found = TRUE;
                     }
 
@@ -316,14 +384,13 @@ void ble_start(GDBusConnection *conn)
         G_DBUS_SIGNAL_FLAGS_NONE,
         on_interfaces_added, NULL, NULL);
 
-    /* 2.5 确保没残留扫描，然后设过滤：纯 LE + 不丢重复包 */
+    /* 2.5 确保没残留扫描，然后设过滤：纯 LE */
     {
-        /* 先停掉可能的旧扫描（忽略返回/错误） */
         g_dbus_proxy_call_sync(adapter, "StopDiscovery",
             NULL, G_DBUS_CALL_FLAGS_NONE, 2000, NULL, NULL);
 
         GVariant *filter = g_variant_new_parsed(
-            "{'Transport': <'le'>, 'DuplicateData': <false>}");
+            "{'Transport': <'le'>}");
         result = g_dbus_proxy_call_sync(
             adapter, "SetDiscoveryFilter",
             g_variant_new_tuple(&filter, 1),
