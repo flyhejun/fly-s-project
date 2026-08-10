@@ -384,11 +384,8 @@ void ble_start(GDBusConnection *conn)
         G_DBUS_SIGNAL_FLAGS_NONE,
         on_interfaces_added, NULL, NULL);
 
-    /* 2.5 确保没残留扫描，然后设过滤：纯 LE */
+    /* 2.5 设置扫描过滤：纯 LE */
     {
-        g_dbus_proxy_call_sync(adapter, "StopDiscovery",
-            NULL, G_DBUS_CALL_FLAGS_NONE, 2000, NULL, NULL);
-
         GVariant *filter = g_variant_new_parsed(
             "{'Transport': <'le'>}");
         result = g_dbus_proxy_call_sync(
