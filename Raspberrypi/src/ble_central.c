@@ -287,7 +287,8 @@ static gboolean check_existing_devices(GDBusConnection *conn)
   */
 void ble_start(GDBusConnection *conn)
 {
-    GError *error = NULL;
+    GError   *error  = NULL;
+    GVariant *result = NULL;
 
     /* 1. 获取适配器代理 */
     GDBusProxy *adapter = g_dbus_proxy_new_sync(
@@ -315,8 +316,29 @@ void ble_start(GDBusConnection *conn)
         G_DBUS_SIGNAL_FLAGS_NONE,
         on_interfaces_added, NULL, NULL);
 
+    /* 2.5 设置扫描过滤：Transport=le 绕开 BR/EDR 交错，提高 LE 扫描占空比 */
+    {
+        GVariant *filter = g_variant_new_parsed(
+            "{'Transport': <'le'>}");
+        result = g_dbus_proxy_call_sync(
+            adapter, "SetDiscoveryFilter",
+            g_variant_new_tuple(&filter, 1),
+            G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+
+        if (error)
+        {
+            LOG_WARN("SetDiscoveryFilter 失败: %s (继续)", error->message);
+            g_clear_error(&error);
+        }
+        else
+        {
+            LOG_INFO("BLE 扫描过滤已设置: Transport=le");
+            g_variant_unref(result);
+        }
+    }
+
     /* 3. 启动扫描 */
-    GVariant *result = g_dbus_proxy_call_sync(
+    result = g_dbus_proxy_call_sync(
                 adapter, "StartDiscovery",
                 NULL, G_DBUS_CALL_FLAGS_NONE,
                 -1, NULL, &error);
