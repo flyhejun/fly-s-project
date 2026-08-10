@@ -319,7 +319,7 @@ void ble_start(GDBusConnection *conn)
     /* 2.5 设置扫描过滤：Transport=le 绕开 BR/EDR 交错，提高 LE 扫描占空比 */
     {
         GVariant *filter = g_variant_new_parsed(
-            "{'Transport': <'le'>}");
+            "{'Transport': <'le'>, 'DuplicateData': <false>}");
         result = g_dbus_proxy_call_sync(
             adapter, "SetDiscoveryFilter",
             g_variant_new_tuple(&filter, 1),
