@@ -429,34 +429,36 @@ static void adapter_power_cycle(GDBusConnection *conn)
                 "(ssv)", "org.bluez.Adapter1",
                 "Powered", g_variant_new_boolean(FALSE));
     ret = g_dbus_proxy_call_sync(
-                props, "Set", g_variant_new_tuple(&params, 1),
+                props, "Set", params,
                 G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
     if (error)
     {
         LOG_ERROR("[POLL] 设置 Powered=FALSE 失败: %s", error->message);
-        g_error_free(error);
+        g_clear_error(&error);
     }
     else if (ret)
     {
         g_variant_unref(ret);
     }
+    g_variant_unref(params);
     usleep(500000);
 
     params = g_variant_new(
                 "(ssv)", "org.bluez.Adapter1",
                 "Powered", g_variant_new_boolean(TRUE));
     ret = g_dbus_proxy_call_sync(
-                props, "Set", g_variant_new_tuple(&params, 1),
+                props, "Set", params,
                 G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
     if (error)
     {
         LOG_ERROR("[POLL] 设置 Powered=TRUE 失败: %s", error->message);
-        g_error_free(error);
+        g_clear_error(&error);
     }
     else if (ret)
     {
         g_variant_unref(ret);
     }
+    g_variant_unref(params);
     usleep(500000);
 
     g_object_unref(props);
