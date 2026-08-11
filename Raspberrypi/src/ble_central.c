@@ -30,6 +30,7 @@ static guint            s_poll_src = 0;   /* 500ms 轮询定时器句柄（防�
 static void process_mfg_data(GVariant *mfg_data);
 static void process_advertising_data(GVariant *props);
 static gboolean check_existing_devices(GDBusConnection *conn);
+static void restart_discovery(GDBusConnection *conn);
 
 /* ================================================================
  *  定时轮询 ManufacturerData
@@ -75,7 +76,10 @@ static gboolean poll_manufacturer_data(gpointer user_data)
                 fail_cnt = 0;
                 g_dev_path[0] = '\0';
                 LOG_WARN("[POLL] 连续读不到 ManufacturerData，重新发现设备");
-                check_existing_devices(g_dev_conn);
+                if (!check_existing_devices(g_dev_conn))
+                {
+                    restart_discovery(g_dev_conn);
+                }
             }
             else if (++tick % 20 == 1)
             {
@@ -92,7 +96,10 @@ static gboolean poll_manufacturer_data(gpointer user_data)
             fail_cnt = 0;
             g_dev_path[0] = '\0';
             LOG_WARN("[POLL] 设备代理失效，重新发现设备");
-            check_existing_devices(g_dev_conn);
+            if (!check_existing_devices(g_dev_conn))
+            {
+                restart_discovery(g_dev_conn);
+            }
         }
         else if (++tick % 20 == 1)
         {
@@ -398,21 +405,11 @@ static gboolean check_existing_devices(GDBusConnection *conn)
     return found;
 }
 
-/* ================================================================
- *  公开 API
- * ================================================================ */
-
-/**
-  * @brief  启动 BLE 广播接收
-  *
-  * 只扫描、不连接。数据通过广播包的 ManufacturerData 获取。
-  */
-void ble_start(GDBusConnection *conn)
+static void restart_discovery(GDBusConnection *conn)
 {
-    GError   *error  = NULL;
-    GVariant *result = NULL;
+    GError      *error = NULL;
+    GVariant    *result = NULL;
 
-    /* 1. 获取适配器代理 */
     GDBusProxy *adapter = g_dbus_proxy_new_sync(
                 conn, G_DBUS_PROXY_FLAGS_NONE,
                 NULL, "org.bluez",
@@ -428,27 +425,19 @@ void ble_start(GDBusConnection *conn)
     }
     LOG_INFO("BLE 适配器就绪");
 
-    /* 1.5 清残留扫描：BlueZ 有时带残留 discovery，直接 StartDiscovery 会 InProgress */
     {
         GVariant *stop = g_dbus_proxy_call_sync(
-            adapter, "StopDiscovery", NULL,
-            G_DBUS_CALL_FLAGS_NONE, 3000, NULL, NULL);
+                             adapter, "StopDiscovery",
+                             NULL, G_DBUS_CALL_FLAGS_NONE,
+                             3000, NULL, NULL);
+
         if (stop)
+        {
             g_variant_unref(stop);
-        usleep(200000);   /* 等 BlueZ 内部状态稳定 */
+        }
+        usleep(200000);
     }
 
-    /* 2. 监听新设备出现 */
-    g_dbus_connection_signal_subscribe(
-        conn,
-        "org.bluez",
-        "org.freedesktop.DBus.ObjectManager",
-        "InterfacesAdded",
-        NULL, NULL,
-        G_DBUS_SIGNAL_FLAGS_NONE,
-        on_interfaces_added, NULL, NULL);
-
-    /* 2.5 设置扫描过滤：纯 LE */
     {
         GVariant *filter = g_variant_new_parsed(
             "{'Transport': <'le'>}");
@@ -469,7 +458,6 @@ void ble_start(GDBusConnection *conn)
         }
     }
 
-    /* 3. 启动扫描 */
     result = g_dbus_proxy_call_sync(
                 adapter, "StartDiscovery",
                 NULL, G_DBUS_CALL_FLAGS_NONE,
@@ -482,11 +470,34 @@ void ble_start(GDBusConnection *conn)
         g_object_unref(adapter);
         return;
     }
-    LOG_INFO("BLE 扫描已启动（纯广播模式）");
-
-    /* 4. 检查已知设备（防止 ESP32 在 Pi 启动前已经在广播） */
-    check_existing_devices(conn);
+    LOG_INFO("BLE discovery 已启动");
 
     g_variant_unref(result);
     g_object_unref(adapter);
+}
+
+/* ================================================================
+ *  公开 API
+ * ================================================================ */
+
+/**
+  * @brief  启动 BLE 广播接收
+  *
+  * 只扫描、不连接。数据通过广播包的 ManufacturerData 获取。
+  */
+void ble_start(GDBusConnection *conn)
+{
+    /* 监听新设备出现：订阅挂在 D-Bus 连接上，重启 discovery 不会失效 */
+    g_dbus_connection_signal_subscribe(
+        conn,
+        "org.bluez",
+        "org.freedesktop.DBus.ObjectManager",
+        "InterfacesAdded",
+        NULL, NULL,
+        G_DBUS_SIGNAL_FLAGS_NONE,
+        on_interfaces_added, NULL, NULL);
+
+    /* 启动 discovery + 检查已知设备（防止 ESP32 在 Pi 启动前已经在广播） */
+    restart_discovery(conn);
+    check_existing_devices(conn);
 }
