@@ -280,11 +280,10 @@ static void on_interfaces_added(GDBusConnection *connection,
             if (addr_variant)
             {
                 const gchar *addr = g_variant_get_string(addr_variant, NULL);
-                LOG_INFO("发现设备: %s (%s)", addr, obj_path);
 
                 if (g_ascii_strcasecmp(addr, g_cfg.target_mac) == 0)
                 {
-                    LOG_INFO("找到 ESP32，开始接收广播数据");
+                    LOG_INFO("找到目标 ESP32: %s (%s)", addr, obj_path);
                     process_advertising_data(props);
                     watch_device(connection, obj_path);
 

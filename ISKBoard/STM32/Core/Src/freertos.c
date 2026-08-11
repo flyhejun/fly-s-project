@@ -334,13 +334,14 @@ void fallTask(void *argument)
   {
       osSemaphoreAcquire(alarmSemHandle, osWaitForever);
       time_start = osKernelGetTickCount();
-      alarm_routine(time_start);
-      g_data_stream = 1;   /* 报警结束 → 恢复实时上传 */
-      FallDetect_Reset();
 
       msg.len = Comm_PackNotify(msg.data, &s_event);
       osMessageQueuePut(commEventQueueHandle, &msg, 0, 0);
       s_event.event_type = 0;
+      
+      alarm_routine(time_start);
+      g_data_stream = 1;   /* 报警结束 → 恢复实时上传 */
+      FallDetect_Reset();
   }
   /* USER CODE END alarmTask */
 }
