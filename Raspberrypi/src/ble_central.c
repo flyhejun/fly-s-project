@@ -440,7 +440,6 @@ static void adapter_power_cycle(GDBusConnection *conn)
     {
         g_variant_unref(ret);
     }
-    g_variant_unref(params);
     usleep(500000);
 
     params = g_variant_new(
@@ -458,7 +457,6 @@ static void adapter_power_cycle(GDBusConnection *conn)
     {
         g_variant_unref(ret);
     }
-    g_variant_unref(params);
     usleep(500000);
 
     g_object_unref(props);
