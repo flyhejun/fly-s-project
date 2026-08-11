@@ -158,7 +158,7 @@ CommTask（100ms 节拍）
 ## BLE 广播机制（esp32_uart.c）
 
 ESP32 跑 **AT 固件**，作为 BLE Server：
-- 初始化序列：`AT` → `AT+SYSMSG=4`（开连接状态 URC）→ `AT+BLEINIT=2`（Server）→ `AT+BLENAME="FallSensor"` → `AT+BLEGATTSSRVCRE`（GATT 服务，含可写特征值 `0xC302`）→ `AT+BLEGATTSSRVSTART` → `AT+BLEADVPARAM=160,160,0,0,7`（可连接广播）→ `AT+BLEADVSTART`。仅 `AT` 失败才中断，其余命令失败 WARN 继续。
+- 初始化序列：`AT` → `AT+SYSMSG=4`（开连接状态 URC）→ `AT+BLEINIT=2`（Server）→ `AT+BLEGATTSSRVCRE`（GATT 服务，含可写特征值 `0xC302`）→ `AT+BLEGATTSSRVSTART` → `AT+BLEADVPARAM=160,160,0,0,7`（可连接广播）→ `AT+BLEADVSTART`。仅 `AT` 失败才中断，其余命令失败 WARN 继续。（无 `AT+BLENAME`：广播名由 ADVDA 的 Name AD 控制，BLENAME 对广播无效）
 - **发送上行帧**：`AT+BLEADVDATA="hex"` 把帧写进广播包 ManufacturerData。Fire & Forget（不等待 OK），保证 10Hz 吞吐。
 - **接收下行帧（轮询，无中断）**：commTask 周期调 `ESP32_RX_Poll()` 收 UART 字节，双模式状态机 —— 行模式（默认，解析 `+BLEDISCONN` / `+WRITE`）＋ 帧模式（SOF 0xAA → 按 LEN 收整帧，SPSC 环形缓冲 4 深，无锁）。
 - **下行帧来源**：Pi 写特征值后 ESP-AT 经 UART 上报 `+WRITE:` URC，`parse_write_urc()` 解析其 value（兼容 hex 字符串 / `<0xHH>` 序列；原始字节场景由 0xAA 帧头触发兜底）→ SOF/EOF 校验 → 入环形缓冲，CRC 由 `Comm_ParseCmd` 再验。

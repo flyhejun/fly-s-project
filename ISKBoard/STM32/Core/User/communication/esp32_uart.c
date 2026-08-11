@@ -61,7 +61,6 @@ typedef enum {
     BLE_S_RESTORE = 0,      /* AT+RESTORE 清 NVS */
     BLE_S_WAIT_READY,       /* 循环发 AT 检测 ESP32 ready（重启完成） */
     BLE_S_BLEINIT,          /* AT+BLEINIT=2（必须 OK，长超时不重试） */
-    BLE_S_BLENAME,          /* AT+BLENAME="FallSensor"（可 SKIP） */
     BLE_S_GATTCREATE,       /* AT+BLEGATTSSRVCRE（可 SKIP） */
     BLE_S_GATTSTART,        /* AT+BLEGATTSSRVSTART（可 SKIP） */
     BLE_S_ADVPARAM,         /* AT+BLEADVPARAM=160,160,0,0,7（可 SKIP） */
@@ -85,7 +84,6 @@ volatile uint8_t g_ble_advdata_err   = 0;
 /* 每个状态对应的 AT 命令（BLE_S_RESTORE/INIT/READY/FAILED 无命令） */
 static const char *state_cmd[] = {
     [BLE_S_BLEINIT]    = "AT+BLEINIT=2",
-    [BLE_S_BLENAME]    = "AT+BLENAME=\"FallSensor\"",
     [BLE_S_GATTCREATE] = "AT+BLEGATTSSRVCRE",
     [BLE_S_GATTSTART]  = "AT+BLEGATTSSRVSTART",
     [BLE_S_ADVPARAM]   = "AT+BLEADVPARAM=160,160,0,0,7",
@@ -96,20 +94,18 @@ static const char *state_cmd[] = {
  * 立即发下一条导致 ESP32 处理堆积卡死（手动测试不会因为人在等） */
 static const uint32_t state_timeout[] = {
     [BLE_S_BLEINIT]    = 6000,
-    [BLE_S_BLENAME]    = 6000,
     [BLE_S_GATTCREATE] = 6000,
     [BLE_S_GATTSTART]  = 6000,
     [BLE_S_ADVPARAM]   = 6000,
     [BLE_S_ADVSTART]   = 6000,
 };
 
-/* 允许容错继续的状态：BLENAME/GATTCREATE/GATTSTART 返回 ERROR → SKIP 沿用。
+/* 允许容错继续的状态：GATTCREATE/GATTSTART/ADVPARAM 返回 ERROR → SKIP 沿用。
  * BLEINIT 和 ADVSTART 不在列表 → 必须 OK。 */
 static int state_allow_skip(BLE_State_t s)
 {
     switch (s)
     {
-        case BLE_S_BLENAME:
         case BLE_S_GATTCREATE:
         case BLE_S_GATTSTART:
         case BLE_S_ADVPARAM:
@@ -123,9 +119,9 @@ static int state_allow_skip(BLE_State_t s)
   * @brief  BLE 初始化状态机 — 每轮推进一步
   *
   * commTask 每 100ms 调用一次，每一步发送一条 AT 命令并等待 OK。
-  * 序列：RESTORE → AT → BLEINIT=2 → BLENAME → GATTCREATE → GATTSTART → ADVSTART。
+  * 序列：RESTORE → AT → BLEINIT=2 → GATTCREATE → GATTSTART → ADVSTART。
   *  - 先 AT+RESTORE 清 NVS（NVS 空时初始化才安全，有旧配置会崩）
-  *  - BLEINIT/ADVSTART 必须 OK；BLENAME/GATTCREATE/GATTSTART 可 SKIP
+  *  - BLEINIT/ADVSTART 必须 OK；GATTCREATE/GATTSTART/ADVPARAM 可 SKIP
   *  - 失败进 FAILED，30 秒低频重试（ESP32 崩溃后重试无意义，靠断电/RESTORE 恢复）
   */
 void ESP32_Init_BLE_Step(void)
@@ -310,8 +306,8 @@ void ESP32_Send(const uint8_t *buf, uint16_t len)
     ad_len += len;
 
     /* ---- 2. 生成 AT 命令 ---- */
-    memcpy(cmd, "AT+BLEADVDATA=\"", 16);
-    hex_pos = 16;
+    hex_pos = strlen("AT+BLEADVDATA=\"");
+    memcpy(cmd, "AT+BLEADVDATA=\"", hex_pos);
 
     for (i = 0; i < ad_len; i++)
     {
