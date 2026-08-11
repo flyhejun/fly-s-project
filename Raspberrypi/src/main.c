@@ -190,33 +190,6 @@ static void on_message(struct mosquitto *mosq, void *userdata,
             }
 
         }
-        else if(strcasecmp(cmd->valuestring, "time_sync") == 0)
-        {
-            time_t now = time(NULL);
-            struct tm *t = localtime(&now);
-
-            type = 0x86;
-
-            payload[0] = (uint8_t)((t->tm_year + 1900) & 0xFF);
-            payload[1] = (uint8_t)(((t->tm_year + 1900) >> 8) & 0xFF);
-            payload[2] = (uint8_t)(t->tm_mon + 1);
-            payload[3] = (uint8_t)(t->tm_mday);
-            payload[4] = (uint8_t)(t->tm_hour);
-            payload[5] = (uint8_t)(t->tm_min);
-
-            plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 6);
-            if (plen <= 0)
-            {
-                LOG_ERROR("time_sync 帧打包失败");
-                cJSON_Delete(root);
-                return;
-            }
-            if(ble_write_enqueue(buf, plen) != 0)
-            {
-                LOG_WARN("BLE 写入队列已满，丢弃指令");
-            }
-            
-        }
         else if(strcasecmp(cmd->valuestring, "query_status") == 0)
         {
             type = 0x87;

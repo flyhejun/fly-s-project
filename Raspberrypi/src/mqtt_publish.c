@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "log.h"
 
 /* 状态名查表 */
@@ -18,11 +19,13 @@ static const char *STATE_NAMES[] = {
 
 int mqtt_publish_frame(struct mosquitto *mosq, const ParsedFrame_t *frame)
 {
-    cJSON *root;
-    char  *payload;
-    char   date_str[24];
-    const char *topic;
-    int    rc;
+    cJSON       *root;
+    char        *payload;
+    char         date_str[24];
+    const char  *topic;
+    int          rc;
+    time_t       now = time(NULL);
+    struct tm   *t = localtime(&now);
 
     if (mosq == NULL || frame == NULL)
         return -1;
@@ -34,10 +37,9 @@ int mqtt_publish_frame(struct mosquitto *mosq, const ParsedFrame_t *frame)
     /* 公共字段 */
     cJSON_AddStringToObject(root, "device_id", "pi01");
 
-    /* 日期转字符串 "YYYY-MM-DD HH:MM" */
-      snprintf(date_str, sizeof(date_str), "%04u-%02u-%02u %02u:%02u",
-             frame->date.year, frame->date.month, frame->date.day,
-             frame->date.hour, frame->date.minute);
+    snprintf(date_str, sizeof(date_str), "%04d-%02d-%02d %02d:%02d:%02d",
+         t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+         t->tm_hour, t->tm_min, t->tm_sec);
 
     switch (frame->type)
     {

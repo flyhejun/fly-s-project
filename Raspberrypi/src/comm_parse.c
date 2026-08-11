@@ -102,26 +102,16 @@ int comm_parse_frame(const uint8_t *raw, size_t len, ParsedFrame_t *out)
     memset(out, 0, sizeof(*out));
     out->type = type;
 
-    /* 日期字段：NOTIFY / REAL_TIME 共用 payload 前 6B，STATUS_REPLY 没有 */
-    if (type == FRAME_TYPE_NOTIFY || type == FRAME_TYPE_REAL_TIME)
-    {
-        out->date.year   = read_u16(&p[0]);
-        out->date.month  = p[2];
-        out->date.day    = p[3];
-        out->date.hour   = p[4];
-        out->date.minute = p[5];
-    }
-
     switch (type)
     {
         case FRAME_TYPE_NOTIFY:
-            out->data.notify.accel_sq = read_u32(&p[7]);
-            out->data.notify.gyro_sq = read_u32(&p[11]);
+            out->data.notify.accel_sq = read_u32(&p[1]);
+            out->data.notify.gyro_sq = read_u32(&p[5]);
             break;
 
         case FRAME_TYPE_REAL_TIME:
-            out->data.real_time.accel_sq = read_u32(&p[6]);
-            out->data.real_time.gyro_sq  = read_u32(&p[10]);
+            out->data.real_time.accel_sq = read_u32(&p[0]);
+            out->data.real_time.gyro_sq  = read_u32(&p[4]);
             break;
 
         case FRAME_TYPE_STATUS_REPLY:

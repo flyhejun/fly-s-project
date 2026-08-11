@@ -47,13 +47,6 @@ static uint8_t calc_crc(const uint8_t *data, uint16_t len)
     return bitrev(crc);
 }
 
-/* 2 字节小端写入 */
-static void write_u16(uint8_t *buf, uint16_t val)
-{
-    buf[0] = (uint8_t)(val & 0xFF);
-    buf[1] = (uint8_t)((val >> 8) & 0xFF);
-}
-
 /* 4 字节小端写入 */
 static void write_u32(uint8_t *buf, uint32_t val)
 {
@@ -76,9 +69,9 @@ static uint32_t read_u32(const uint8_t *buf)
 
 /**
   * @brief  打包 EVENT_NOTIFY（即时通知）
-  * @param  buf   输出缓冲区，至少 19 字节
+  * @param  buf   输出缓冲区，至少 15 字节
   * @param  event 跌倒事件数据
-  * @retval 写入字节数（19）
+  * @retval 写入字节数（15）
   */
 uint16_t Comm_PackNotify(uint8_t *buf, const FallEvent_Data_t *event)
 {
@@ -88,13 +81,6 @@ uint16_t Comm_PackNotify(uint8_t *buf, const FallEvent_Data_t *event)
     buf[idx++] = COMM_TYPE_NOTIFY;
     buf[idx++] = (uint8_t)(COMM_NOTIFY_PAYLOAD_LEN & 0xFF);
     buf[idx++] = (uint8_t)((COMM_NOTIFY_PAYLOAD_LEN >> 8) & 0xFF);
-
-    write_u16(&buf[idx], event->date.year);
-    idx += 2;
-    buf[idx++] = event->date.month;
-    buf[idx++] = event->date.day;
-    buf[idx++] = event->date.hour;
-    buf[idx++] = event->date.minute;
 
     buf[idx++] = event->event_type;
 
@@ -116,14 +102,12 @@ uint16_t Comm_PackNotify(uint8_t *buf, const FallEvent_Data_t *event)
 
 /**
   * @brief  打包 REAL_TIME（实时数据）
-  * @param  buf      输出缓冲区，至少 20 字节
-  * @param  date     年月日时分（上位机最近一次同步）
+  * @param  buf      输出缓冲区，至少 14 字节
   * @param  accel_sq 加速度平方和
   * @param  gyro_sq  角速度平方和
-  * @retval 写入字节数（20）
+  * @retval 写入字节数（14）
   */
-uint16_t Comm_PackRealTime(uint8_t *buf, const Comm_DateTime_t *date,
-                           uint32_t accel_sq, uint32_t gyro_sq)
+uint16_t Comm_PackRealTime(uint8_t *buf, uint32_t accel_sq, uint32_t gyro_sq)
 {
     uint16_t idx = 0;
 
@@ -131,13 +115,6 @@ uint16_t Comm_PackRealTime(uint8_t *buf, const Comm_DateTime_t *date,
     buf[idx++] = COMM_TYPE_REAL_TIME;
     buf[idx++] = (uint8_t)(COMM_REALTIME_PAYLOAD_LEN & 0xFF);
     buf[idx++] = (uint8_t)((COMM_REALTIME_PAYLOAD_LEN >> 8) & 0xFF);
-
-    write_u16(&buf[idx], date->year);
-    idx += 2;
-    buf[idx++] = date->month;
-    buf[idx++] = date->day;
-    buf[idx++] = date->hour;
-    buf[idx++] = date->minute;
 
     write_u32(&buf[idx], accel_sq);
     idx += 4;
@@ -221,15 +198,6 @@ int Comm_ParseCmd(const uint8_t *frame, uint16_t len, Comm_Cmd_t *cmd)
         case COMM_TYPE_TEST_BUZZER:
             if (payload_len != 1) return 0;
             cmd->value = frame[4];
-            break;
-
-        case COMM_TYPE_TIME_SYNC:
-            if (payload_len != COMM_TIME_SYNC_PAYLOAD_LEN) return 0;
-            cmd->date.year   = (uint16_t)frame[4] | ((uint16_t)frame[5] << 8);
-            cmd->date.month  = frame[6];
-            cmd->date.day    = frame[7];
-            cmd->date.hour   = frame[8];
-            cmd->date.minute = frame[9];
             break;
 
         case COMM_TYPE_ALARM_CANCEL:

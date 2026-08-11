@@ -293,10 +293,13 @@ void ESP32_Send(const uint8_t *buf, uint16_t len)
     ad[ad_len++] = 0x01;   /* AD Type: Flags */
     ad[ad_len++] = 0x06;   /* LE General Discoverable */
 
-    /* Short Name AD: "f" 占位，防 ESP32 自动加 "Espressif" 挤爆 31B */
-    ad[ad_len++] = 0x02;   /* 长度 = 1(type) + 1(字符) */
+    /* Short Name AD: "Fall" 占位，防 ESP32 自动加 "Espressif" 挤爆 31B */
+    ad[ad_len++] = 0x05;   /* 长度 = 1(type) + 4(字符) */
     ad[ad_len++] = 0x09;   /* AD Type: Complete Local Name */
-    ad[ad_len++] = 'f';
+    ad[ad_len++] = 'F';
+    ad[ad_len++] = 'a';
+    ad[ad_len++] = 'l';
+    ad[ad_len++] = 'l';
     /* Manufacturer Data AD（含帧数据） */
     ad[ad_len++] = len + 3;      /* 长度 = 1(type) + 2(mfg_id) + len */
     ad[ad_len++] = 0xFF;         /* AD Type: Manufacturer Specific Data */

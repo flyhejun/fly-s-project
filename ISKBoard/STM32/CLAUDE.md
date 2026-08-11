@@ -141,17 +141,16 @@ CommTask（100ms 节拍）
 
 | 方向 | TYPE | 名称 | Payload | 帧长 |
 |:--:|:--:|------|------|:--:|
-| ↑ | 0x01 | EVENT_NOTIFY | date(6) + event_type(1) + accel_sq(4) + gyro_sq(4) | 21B |
-| ↑ | 0x02 | REAL_TIME | date(6) + accel_sq(4) + gyro_sq(4)，10Hz | 20B |
+| ↑ | 0x01 | EVENT_NOTIFY | event_type(1) + accel_sq(4) + gyro_sq(4) | 15B |
+| ↑ | 0x02 | REAL_TIME | accel_sq(4) + gyro_sq(4)，10Hz | 14B |
 | ↑ | 0x03 | STATUS_REPLY | state(1) | 7B |
 | ↓ | 0x81 | SET_THRESHOLD | param_id(1) + value(4) | 11B |
 | ↓ | 0x83 | ALARM_CANCEL | 空 | 6B |
 | ↓ | 0x84 | TEST_LED | on/off(1) | 7B |
 | ↓ | 0x85 | TEST_BUZZER | on/off(1) | 7B |
-| ↓ | 0x86 | TIME_SYNC | year(2)+month+day+hour+minute | 12B |
 | ↓ | 0x87 | QUERY_STATUS | 空 | 6B |
 
-- `date` 为上位机 TIME_SYNC 周期下发、STM32 直接存储的年月日时分（不换算，无 RTC）。
+- 上行帧不携带时间，由树莓派接收时打本地时间戳（MQTT JSON 的 `date` 字段即 Pi 接收时间，带秒）。
 - 下行可改阈值参数 ID：`0x01` freefall、`0x02` impact、`0x03` still_low、`0x04` still_high（时间与 gyro 阈值只读）。
 - 两端实现需同步：STM32 `comm_protocol.c/h` ↔ 树莓派 `comm_parse.c/h`。
 

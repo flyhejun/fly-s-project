@@ -62,13 +62,6 @@ volatile uint8_t g_data_stream = 1;
 /* 报警取消标志（下行 ALARM_CANCEL 指令置位） */
 volatile uint8_t g_alarm = 0;
 
-/* 当前年月日时分（上位机 TIME_SYNC 周期性下发，直接存储不换算） */
-static uint16_t g_date_year;
-static uint8_t  g_date_month;
-static uint8_t  g_date_day;
-static uint8_t  g_date_hour;
-static uint8_t  g_date_minute;
-
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -299,11 +292,6 @@ void fallTask(void *argument)
           ts = osKernelGetTickCount();
           event = FallDetect_Process(&raw, ts);
           accel_sq = FallDetect_GetAccelSq();
-          s_event.date.year   = g_date_year;
-          s_event.date.month  = g_date_month;
-          s_event.date.day    = g_date_day;
-          s_event.date.hour   = g_date_hour;
-          s_event.date.minute = g_date_minute;
           s_event.accel_sq    = accel_sq;
           s_event.gyro_sq     = FallDetect_GetGyroSq();
 
@@ -366,12 +354,11 @@ void fallTask(void *argument)
 void commTask(void *argument)
 {
   CommEvent_t       msg;
-  uint8_t           tx_buf[COMM_NOTIFY_FRAME_LEN];  /* 最大帧（NOTIFY 21B） */
+  uint8_t           tx_buf[COMM_NOTIFY_FRAME_LEN];  /* 最大帧（NOTIFY 15B） */
   uint16_t          tx_len;
   uint8_t           rx_buf[64];
   uint16_t          rx_len;
   Comm_Cmd_t        cmd;
-  Comm_DateTime_t   date;
 
   /* USER CODE BEGIN commTask */
 
@@ -411,13 +398,7 @@ void commTask(void *argument)
     }
     else if (g_data_stream)
     {
-        date.year   = g_date_year;
-        date.month  = g_date_month;
-        date.day    = g_date_day;
-        date.hour   = g_date_hour;
-        date.minute = g_date_minute;
-        tx_len = Comm_PackRealTime(tx_buf, &date,
-                                   FallDetect_GetAccelSq(),
+        tx_len = Comm_PackRealTime(tx_buf, FallDetect_GetAccelSq(),
                                    FallDetect_GetGyroSq());
         ESP32_Send(tx_buf, tx_len);
 
@@ -455,17 +436,6 @@ void commTask(void *argument)
                 case COMM_TYPE_TEST_BUZZER:
                     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11,
                                       cmd.value ? GPIO_PIN_SET : GPIO_PIN_RESET);
-                    break;
-
-                case COMM_TYPE_TIME_SYNC:
-                    g_date_year   = cmd.date.year;
-                    g_date_month  = cmd.date.month;
-                    g_date_day    = cmd.date.day;
-                    g_date_hour   = cmd.date.hour;
-                    g_date_minute = cmd.date.minute;
-                    printf("[CMD] TIME_SYNC %04u-%02u-%02u %02u:%02u\n",
-                           g_date_year, g_date_month, g_date_day,
-                           g_date_hour, g_date_minute);
                     break;
 
                 case COMM_TYPE_CHECK_STATUS:

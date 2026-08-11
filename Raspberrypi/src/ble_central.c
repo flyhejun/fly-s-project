@@ -134,8 +134,6 @@ static void process_mfg_data(GVariant *mfg_data)
 
         data = g_variant_get_fixed_array(value, &len, sizeof(guint8));
 
-        LOG_INFO("[ADV] mfg_id=0x%04X, len=%zu", mfg_id, len);
-
         if (comm_parse_frame(data, len, &frame))
         {
             if(len == s_last_len && (memcmp(data, s_last_frame, len) == 0))
@@ -147,6 +145,7 @@ static void process_mfg_data(GVariant *mfg_data)
             {
                 memcpy(s_last_frame, data, len);
                 s_last_len = len;
+                LOG_INFO("[ADV] mfg_id=0x%04X, len=%zu", mfg_id, len);
             }
 
             LOG_INFO("[ADV] 解析帧成功 type=%02X", frame.type);

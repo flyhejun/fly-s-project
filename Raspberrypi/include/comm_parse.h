@@ -30,24 +30,14 @@
 #define FRAME_TYPE_ALARM_CANCEL  0x83
 #define FRAME_TYPE_TEST_LED      0x84
 #define FRAME_TYPE_TEST_BUZZER   0x85
-#define FRAME_TYPE_TIME_SYNC     0x86
 #define FRAME_TYPE_QUERY_STATUS  0x87
 
 /* Payload 大小 */
-#define REAL_TIME_PAYLOAD_LEN   14   /* date(6)+accel_sq(4)+gyro_sq(4) */
-#define NOTIFY_PAYLOAD_LEN      15   /* date(6)+type(1)+accel_sq(4)+gyro_sq(4) */
+#define REAL_TIME_PAYLOAD_LEN   8    /* accel_sq(4)+gyro_sq(4) */
+#define NOTIFY_PAYLOAD_LEN      9    /* type(1)+accel_sq(4)+gyro_sq(4) */
 #define STATUS_PAYLOAD_LEN      1    /* state(1) */
 
 /* ---- 解析结果结构体 ---- */
-
-/* 日期（年月日时分） */
-typedef struct {
-    uint16_t year;
-    uint8_t  month;
-    uint8_t  day;
-    uint8_t  hour;
-    uint8_t  minute;
-} PiDate_t;
 
 /* REAL_TIME 帧的数据字段（不含日期，日期在 ParsedFrame_t.date） */
 typedef struct {
@@ -64,7 +54,6 @@ typedef struct {
 /* 解析完成的帧 */
 typedef struct {
     uint8_t   type;
-    PiDate_t  date;         /* NOTIFY / REAL_TIME 共用，STATUS_REPLY 不用 */
     union {
         PiRealTime_t real_time;
         PiNotify_t   notify;
