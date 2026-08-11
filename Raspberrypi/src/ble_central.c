@@ -71,7 +71,7 @@ static gboolean poll_manufacturer_data(gpointer user_data)
         else
         {
             /* 连续 20 次（10 秒）读不到 → BlueZ 设备对象可能已失效，重新发现 */
-            if (++fail_cnt >= 20)
+            if (++fail_cnt >= 8)
             {
                 fail_cnt = 0;
                 g_dev_path[0] = '\0';
@@ -91,7 +91,7 @@ static gboolean poll_manufacturer_data(gpointer user_data)
     else
     {
         /* 设备代理创建失败（对象被移除）同样自愈 */
-        if (++fail_cnt >= 20)
+        if (++fail_cnt >= 8)
         {
             fail_cnt = 0;
             g_dev_path[0] = '\0';
@@ -410,6 +410,7 @@ static void adapter_power_cycle(GDBusConnection *conn)
     GDBusProxy      *props;
     GVariant        *params;
     GVariant        *ret;
+    GError          *error = NULL;
 
     props = g_dbus_proxy_new_sync(
                 conn, G_DBUS_PROXY_FLAGS_NONE,
@@ -429,8 +430,13 @@ static void adapter_power_cycle(GDBusConnection *conn)
                 "Powered", g_variant_new_boolean(FALSE));
     ret = g_dbus_proxy_call_sync(
                 props, "Set", g_variant_new_tuple(&params, 1),
-                G_DBUS_CALL_FLAGS_NONE, -1, NULL, NULL);
-    if (ret)
+                G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+    if (error)
+    {
+        LOG_ERROR("[POLL] 设置 Powered=FALSE 失败: %s", error->message);
+        g_error_free(error);
+    }
+    else if (ret)
     {
         g_variant_unref(ret);
     }
@@ -441,8 +447,13 @@ static void adapter_power_cycle(GDBusConnection *conn)
                 "Powered", g_variant_new_boolean(TRUE));
     ret = g_dbus_proxy_call_sync(
                 props, "Set", g_variant_new_tuple(&params, 1),
-                G_DBUS_CALL_FLAGS_NONE, -1, NULL, NULL);
-    if (ret)
+                G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+    if (error)
+    {
+        LOG_ERROR("[POLL] 设置 Powered=TRUE 失败: %s", error->message);
+        g_error_free(error);
+    }
+    else if (ret)
     {
         g_variant_unref(ret);
     }
