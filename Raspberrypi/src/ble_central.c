@@ -405,39 +405,75 @@ static gboolean check_existing_devices(GDBusConnection *conn)
     return found;
 }
 
-static void restart_discovery(GDBusConnection *conn)
+static void adapter_power_cycle(GDBusConnection *conn)
 {
-    GError      *error = NULL;
-    GVariant    *result = NULL;
+    GDBusProxy      *props;
+    GVariant        *params;
+    GVariant        *ret;
 
-    GDBusProxy *adapter = g_dbus_proxy_new_sync(
+    props = g_dbus_proxy_new_sync(
                 conn, G_DBUS_PROXY_FLAGS_NONE,
                 NULL, "org.bluez",
                 "/org/bluez/hci0",
-                "org.bluez.Adapter1",
-                NULL, &error);
+                "org.freedesktop.DBus.Properties",
+                NULL, NULL);
 
-    if (error)
+    if (!props)
     {
-        LOG_ERROR("创建适配器代理失败: %s", error->message);
-        g_error_free(error);
+        LOG_ERROR("[POLL] 创建 Properties 代理失败，无法复位适配器");
         return;
     }
-    LOG_INFO("BLE 适配器就绪");
 
+    params = g_variant_new(
+                "(ssv)", "org.bluez.Adapter1",
+                "Powered", g_variant_new_boolean(FALSE));
+    ret = g_dbus_proxy_call_sync(
+                props, "Set", g_variant_new_tuple(&params, 1),
+                G_DBUS_CALL_FLAGS_NONE, -1, NULL, NULL);
+    if (ret)
     {
-        GVariant *stop = g_dbus_proxy_call_sync(
-                             adapter, "StopDiscovery",
-                             NULL, G_DBUS_CALL_FLAGS_NONE,
-                             3000, NULL, NULL);
-
-        if (stop)
-        {
-            g_variant_unref(stop);
-        }
-        usleep(200000);
+        g_variant_unref(ret);
     }
+    usleep(500000);
 
+    params = g_variant_new(
+                "(ssv)", "org.bluez.Adapter1",
+                "Powered", g_variant_new_boolean(TRUE));
+    ret = g_dbus_proxy_call_sync(
+                props, "Set", g_variant_new_tuple(&params, 1),
+                G_DBUS_CALL_FLAGS_NONE, -1, NULL, NULL);
+    if (ret)
+    {
+        g_variant_unref(ret);
+    }
+    usleep(500000);
+
+    g_object_unref(props);
+    LOG_WARN("[POLL] 适配器已复位（Powered off/on）");
+}
+
+/**
+  * @brief  执行一轮 discovery 启动：Stop → Filter → Start
+  * @retval TRUE  启动成功
+  *         FALSE 失败（含 InProgress：控制器残留扫描状态）
+  */
+static gboolean start_discovery_once(GDBusProxy *adapter)
+{
+    GVariant *result;
+    GError   *error = NULL;
+
+    /* 1. StopDiscovery：清残留状态（本来就停着则忽略失败） */
+    result = g_dbus_proxy_call_sync(
+                adapter, "StopDiscovery",
+                NULL, G_DBUS_CALL_FLAGS_NONE,
+                3000, NULL, NULL);
+    if (result)
+    {
+        g_variant_unref(result);
+    }
+    usleep(200000);   /* 等 BlueZ 内部状态稳定 */
+
+    /* 2. SetDiscoveryFilter：纯 LE */
     {
         GVariant *filter = g_variant_new_parsed(
             "{'Transport': <'le'>}");
@@ -458,6 +494,7 @@ static void restart_discovery(GDBusConnection *conn)
         }
     }
 
+    /* 3. StartDiscovery */
     result = g_dbus_proxy_call_sync(
                 adapter, "StartDiscovery",
                 NULL, G_DBUS_CALL_FLAGS_NONE,
@@ -467,12 +504,52 @@ static void restart_discovery(GDBusConnection *conn)
     {
         LOG_ERROR("StartDiscovery 失败: %s", error->message);
         g_error_free(error);
+        return FALSE;
+    }
+    LOG_INFO("BLE discovery 已启动");
+    g_variant_unref(result);
+    return TRUE;
+}
+
+/**
+  * @brief  启动/重启 BLE discovery，失败自动升级：复位适配器再试一轮
+  * @note   控制器扫描状态卡死（InProgress）时 Stop/Start 救不回来，
+  *         必须 Powered off/on 复位适配器，等价于手动 hcitool lescan
+  */
+static void restart_discovery(GDBusConnection *conn)
+{
+    GError *error = NULL;
+
+    GDBusProxy *adapter = g_dbus_proxy_new_sync(
+                conn, G_DBUS_PROXY_FLAGS_NONE,
+                NULL, "org.bluez",
+                "/org/bluez/hci0",
+                "org.bluez.Adapter1",
+                NULL, &error);
+
+    if (error)
+    {
+        LOG_ERROR("创建适配器代理失败: %s", error->message);
+        g_error_free(error);
+        return;
+    }
+    LOG_INFO("BLE 适配器就绪");
+
+    /* 第 1 轮：直接启动 */
+    if (start_discovery_once(adapter))
+    {
         g_object_unref(adapter);
         return;
     }
-    LOG_INFO("BLE discovery 已启动");
 
-    g_variant_unref(result);
+    /* 失败（常见 InProgress）→ 复位适配器，清控制器残留扫描位 */
+    LOG_WARN("[POLL] 首次启动失败，复位适配器后重试");
+    adapter_power_cycle(conn);
+
+    /* 第 2 轮：复位后重试 */
+    if (!start_discovery_once(adapter))
+        LOG_ERROR("[POLL] 复位适配器后仍无法启动 discovery");
+
     g_object_unref(adapter);
 }
 
