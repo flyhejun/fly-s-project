@@ -24,10 +24,12 @@ extern struct mosquitto *g_mosq;
 /* 找到 ESP32 后用于定时轮询 ManufacturerData */
 static GDBusConnection *g_dev_conn = NULL;
 static char             g_dev_path[128];
+static guint            s_poll_src = 0;   /* 500ms 轮询定时器句柄（防自愈时重复添加） */
 
 /* ---- 前置声明 ---- */
 static void process_mfg_data(GVariant *mfg_data);
 static void process_advertising_data(GVariant *props);
+static gboolean check_existing_devices(GDBusConnection *conn);
 
 /* ================================================================
  *  定时轮询 ManufacturerData
@@ -45,6 +47,7 @@ static gboolean poll_manufacturer_data(gpointer user_data)
     GDBusProxy *dev_proxy;
     GVariant   *props;
     static int  tick = 0;
+    static int  fail_cnt = 0;   /* 连续失败计数（自愈触发阈值） */
     (void)user_data;
 
     if (g_dev_path[0] == '\0')
@@ -60,18 +63,41 @@ static gboolean poll_manufacturer_data(gpointer user_data)
         props = g_dbus_proxy_get_cached_property(dev_proxy, "ManufacturerData");
         if (props)
         {
+            fail_cnt = 0;   /* 读到数据 → 设备正常，重置失败计数 */
             process_mfg_data(props);
             g_variant_unref(props);
         }
-        else if (++tick % 20 == 1)
+        else
         {
-            LOG_INFO("[POLL] ManufacturerData 缓存为空 (tick=%d)", tick);
+            /* 连续 20 次（10 秒）读不到 → BlueZ 设备对象可能已失效，重新发现 */
+            if (++fail_cnt >= 20)
+            {
+                fail_cnt = 0;
+                g_dev_path[0] = '\0';
+                LOG_WARN("[POLL] 连续读不到 ManufacturerData，重新发现设备");
+                check_existing_devices(g_dev_conn);
+            }
+            else if (++tick % 20 == 1)
+            {
+                LOG_INFO("[POLL] ManufacturerData 缓存为空 (tick=%d)", tick);
+            }
         }
         g_object_unref(dev_proxy);
     }
-    else if (++tick % 20 == 1)
+    else
     {
-        LOG_WARN("[POLL] 设备代理创建失败: %s", g_dev_path);
+        /* 设备代理创建失败（对象被移除）同样自愈 */
+        if (++fail_cnt >= 20)
+        {
+            fail_cnt = 0;
+            g_dev_path[0] = '\0';
+            LOG_WARN("[POLL] 设备代理失效，重新发现设备");
+            check_existing_devices(g_dev_conn);
+        }
+        else if (++tick % 20 == 1)
+        {
+            LOG_WARN("[POLL] 设备代理创建失败: %s", g_dev_path);
+        }
     }
 
     return G_SOURCE_CONTINUE;
@@ -95,6 +121,9 @@ static void process_mfg_data(GVariant *mfg_data)
     guint16      mfg_id;
     GVariant    *value;
 
+    static uint8_t  s_last_frame[32];
+    static uint16_t s_last_len = 0;
+
     g_variant_iter_init(&iter, mfg_data);
 
     while (g_variant_iter_next(&iter, "{qv}", &mfg_id, &value))
@@ -109,6 +138,17 @@ static void process_mfg_data(GVariant *mfg_data)
 
         if (comm_parse_frame(data, len, &frame))
         {
+            if(len == s_last_len && (memcmp(data, s_last_frame, len) == 0))
+            {
+                g_variant_unref(value);
+                continue;
+            }
+            else
+            {
+                memcpy(s_last_frame, data, len);
+                s_last_len = len;
+            }
+
             LOG_INFO("[ADV] 解析帧成功 type=%02X", frame.type);
 
             if (g_mosq)
@@ -254,7 +294,8 @@ static void on_interfaces_added(GDBusConnection *connection,
                     {
                         g_dev_conn = connection;
                         strncpy(g_dev_path, obj_path, sizeof(g_dev_path) - 1);
-                        g_timeout_add(500, poll_manufacturer_data, NULL);
+                        if (s_poll_src == 0)
+                            s_poll_src = g_timeout_add(500, poll_manufacturer_data, NULL);
                         LOG_INFO("启动 ManufacturerData 轮询 (500ms)");
                     }
                 }
@@ -338,7 +379,8 @@ static gboolean check_existing_devices(GDBusConnection *conn)
                         {
                             g_dev_conn = conn;
                             strncpy(g_dev_path, obj_path, sizeof(g_dev_path) - 1);
-                            g_timeout_add(500, poll_manufacturer_data, NULL);
+                            if (s_poll_src == 0)
+                                s_poll_src = g_timeout_add(500, poll_manufacturer_data, NULL);
                             LOG_INFO("启动 ManufacturerData 轮询 (500ms)");
                         }
                         found = TRUE;
