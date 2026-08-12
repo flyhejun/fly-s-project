@@ -14,6 +14,7 @@
 #include <gio/gio.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include "comm_parse.h"
 #include "mqtt_publish.h"
 #include "log.h"
@@ -646,6 +647,9 @@ static void restart_discovery(GDBusConnection *conn)
   */
 void ble_start(GDBusConnection *conn)
 {
+    if (geteuid() != 0)
+        LOG_WARN("非 root 运行，D-Bus 复位和 HCI 恢复将失效，建议 sudo ./isk_gateway");
+
     /* 监听新设备出现：订阅挂在 D-Bus 连接上，重启 discovery 不会失效 */
     g_dbus_connection_signal_subscribe(
         conn,
