@@ -538,6 +538,13 @@ static gboolean start_discovery_once(GDBusProxy *adapter)
 
     if (error)
     {
+        /* InProgress = BlueZ 已有扫描在进行（内建 scanner / 其他客户端），直接复用 */
+        if (strstr(error->message, "InProgress"))
+        {
+            LOG_INFO("StartDiscovery: BlueZ 已有扫描，直接复用");
+            g_error_free(error);
+            return TRUE;
+        }
         LOG_ERROR("StartDiscovery 失败: %s", error->message);
         g_error_free(error);
         return FALSE;
