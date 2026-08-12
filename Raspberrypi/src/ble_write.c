@@ -35,6 +35,9 @@ typedef struct {
 /* ---- 模块全局 ---- */
 static GDBusConnection *g_conn = NULL;
 
+/* 下行 GATT 期间置 1：暂停 LE 扫描时，ble_central 的 poll 跳过自愈 */
+volatile int g_scan_suspended = 0;
+
 static CmdItem_t        g_queue[CMD_QUEUE_SIZE];
 static int              g_head  = 0;   /* 写入位置 */
 static int              g_tail  = 0;   /* 读取位置 */
@@ -86,6 +89,7 @@ static void ble_gatt_write(const uint8_t *frame, size_t len)
     }
 
     /* ---- 2. 暂停 LE 扫描（Pi 控制器扫描+连接不可并存）---- */
+    g_scan_suspended = 1;   /* 通知 ble_central：下行期间跳过 poll 自愈 */
     {
         GDBusProxy *adapter = g_dbus_proxy_new_sync(
             g_conn, G_DBUS_PROXY_FLAGS_NONE, NULL,
@@ -99,26 +103,24 @@ static void ble_gatt_write(const uint8_t *frame, size_t len)
             if (stop)
                 g_variant_unref(stop);
             g_object_unref(adapter);
-            usleep(200000);   /* 等扫描状态稳定 */
+            usleep(500000);   /* 等扫描状态稳定（弱射频需更长） */
         }
     }
 
-    /* ---- 3. 建立连接（已连接则忽略报错，继续走后续流程） ---- */
-    for (i = 0; i < 2; i++)
+    /* ---- 3. 建立连接（多次重试，摊开连接窗口） ---- */
+    for (i = 0; i < 4; i++)
     {
         result = g_dbus_proxy_call_sync(device_proxy, "Connect", NULL,
-            G_DBUS_CALL_FLAGS_NONE, 25000, NULL, &error);
+            G_DBUS_CALL_FLAGS_NONE, 10000, NULL, &error);
 
         if (error)
         {
-            LOG_WARN("[GATT] Connect 返回: %s (尝试 %d/2)", error->message, i + 1);
+            LOG_WARN("[GATT] Connect 返回: %s (尝试 %d/4)", error->message, i + 1);
             g_clear_error(&error);
-            if (i == 0)
+            if (i < 3)
             {
-                /* 首次失败 → 等 1s 再试（ESP32 可能正更新广播数据） */
                 LOG_INFO("[GATT] 等 1s 后重试连接...");
                 sleep(1);
-                continue;
             }
         }
         else
@@ -130,6 +132,22 @@ static void ble_gatt_write(const uint8_t *frame, size_t len)
     {
         g_variant_unref(result);
         result = NULL;
+    }
+
+    /* 连接是否真正建立：查 Connected 属性，避免白等 ServicesResolved */
+    {
+        GVariant *cv = g_dbus_proxy_get_cached_property(device_proxy, "Connected");
+        gboolean connected = FALSE;
+        if (cv)
+        {
+            connected = g_variant_get_boolean(cv);
+            g_variant_unref(cv);
+        }
+        if (!connected)
+        {
+            LOG_ERROR("[GATT] Connect 未建立，放弃本次写入");
+            goto disconnect;
+        }
     }
 
     /* ---- 4. 轮询等待 GATT 服务发现完成 ---- */
@@ -283,24 +301,40 @@ disconnect:
             NULL, NULL);
         if (adapter)
         {
-            GVariant *filter = g_variant_new_parsed("{'Transport': <'le'>}");
-            GVariant *ret = g_dbus_proxy_call_sync(
+            GError   *scan_err = NULL;
+            GVariant *ret;
+            GVariant *filter;
+
+            filter = g_variant_new_parsed("{'Transport': <'le'>}");
+            ret = g_dbus_proxy_call_sync(
                 adapter, "SetDiscoveryFilter",
                 g_variant_new_tuple(&filter, 1),
-                G_DBUS_CALL_FLAGS_NONE, -1, NULL, NULL);
-            if (ret)
+                G_DBUS_CALL_FLAGS_NONE, -1, NULL, &scan_err);
+            if (scan_err)
+            {
+                LOG_WARN("[GATT] 恢复 SetDiscoveryFilter 失败: %s", scan_err->message);
+                g_clear_error(&scan_err);
+            }
+            else if (ret)
                 g_variant_unref(ret);
 
             ret = g_dbus_proxy_call_sync(
                 adapter, "StartDiscovery", NULL,
-                G_DBUS_CALL_FLAGS_NONE, 10000, NULL, NULL);
-            if (ret)
+                G_DBUS_CALL_FLAGS_NONE, 10000, NULL, &scan_err);
+            if (scan_err)
+            {
+                LOG_ERROR("[GATT] 恢复 StartDiscovery 失败: %s（看门狗将兜底恢复）",
+                          scan_err->message);
+                g_clear_error(&scan_err);
+            }
+            else if (ret)
                 g_variant_unref(ret);
 
             g_object_unref(adapter);
             LOG_INFO("[GATT] LE 扫描已恢复");
         }
     }
+    g_scan_suspended = 0;   /* 下行周期结束，恢复 poll 自愈 */
 }
 
 static void *ble_write_thread(void *arg)
