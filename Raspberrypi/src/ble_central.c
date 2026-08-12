@@ -62,9 +62,12 @@ static void restart_discovery(GDBusConnection *conn);
 static gboolean poll_manufacturer_data(gpointer user_data)
 {
     GDBusProxy *dev_proxy;
-    GVariant   *props;
-    static int  tick = 0;
-    static int  fail_cnt = 0;   /* 连续失败计数（自愈触发阈值） */
+    GVariant   *props = NULL;
+    gboolean    have_data = FALSE;
+    static int  tick      = 0;   /* 诊断：空缓存计数（节流打印用） */
+    static int  fail_cnt  = 0;   /* 新鲜度看门狗：连续失联计数（唯一判活权威） */
+    static int  empty_cnt = 0;   /* 缓存空计数：仅触发轻量"重找设备路径" */
+    gint64      now_ms;
     (void)user_data;
 
     /* 下行 GATT 期间扫描被暂停：跳过本轮，避免误触发自愈 */
@@ -73,6 +76,12 @@ static gboolean poll_manufacturer_data(gpointer user_data)
 
     if (g_dev_path[0] == '\0')
         return G_SOURCE_CONTINUE;
+
+    now_ms = g_get_monotonic_time() / 1000;
+
+    /* 首轮：以当前时间为新鲜度基准，避免刚启动/刚发现设备就误判失联 */
+    if (g_last_seq_ms == 0)
+        g_last_seq_ms = now_ms;
 
     dev_proxy = g_dbus_proxy_new_sync(
         g_dev_conn, G_DBUS_PROXY_FLAGS_NONE, NULL,
@@ -84,74 +93,60 @@ static gboolean poll_manufacturer_data(gpointer user_data)
         props = g_dbus_proxy_get_cached_property(dev_proxy, "ManufacturerData");
         if (props)
         {
-            gint64 now_ms = g_get_monotonic_time() / 1000;
-
-            /* 首次轮询：以当前时间作基准 */
-            if (g_last_seq_ms == 0)
-                g_last_seq_ms = now_ms;
-
-            if (now_ms - g_last_seq_ms > FRESH_WATCHDOG_MS)
-            {
-                /* 缓存有数据但序号久未更新 → 控制器可能已卡死，
-                 * 之前的 fail_cnt 逻辑只认"缓存为空"，这里补上"数据陈旧" */
-                if (++fail_cnt >= 8)
-                {
-                    fail_cnt = 0;
-                    g_dev_path[0] = '\0';
-                    s_last_len = 0;   /* 清去重，防恢复后首帧被吞 */
-                    LOG_WARN("[POLL] 数据 %dms 无更新，重启扫描", FRESH_WATCHDOG_MS);
-                    /* 数据陈旧说明控制器不投递新广播了，缓存里的设备对象也是
-                     * 陈旧的 —— check_existing_devices 只重看缓存救不回来。
-                     * 必须真正重启扫描（内部含 Stop/Start → HCI → bluetoothd 升级） */
-                    restart_discovery(g_dev_conn);
-                }
-            }
-            else
-            {
-                fail_cnt = 0;   /* 数据新鲜 → 设备正常，重置失败计数 */
-                process_mfg_data(props);
-            }
+            /* 有数据就解析；process_mfg_data 按滚动序号更新 g_last_seq_ms */
+            process_mfg_data(props);
             g_variant_unref(props);
+            have_data = TRUE;
         }
         else
         {
-            /* 连续 8 次（4 秒）读不到 → BlueZ 设备对象可能已失效，重新发现 */
-            if (++fail_cnt >= 8)
-            {
-                fail_cnt = 0;
-                g_dev_path[0] = '\0';
-                s_last_len = 0;
-                LOG_WARN("[POLL] 连续读不到 ManufacturerData，重新发现设备");
-                if (!check_existing_devices(g_dev_conn))
-                {
-                    restart_discovery(g_dev_conn);
-                }
-            }
-            else if (++tick % 20 == 1)
-            {
+            if (++tick % 20 == 1)   /* 每 ~10s 一条，避免刷屏 */
                 LOG_INFO("[POLL] ManufacturerData 缓存为空 (tick=%d)", tick);
-            }
         }
         g_object_unref(dev_proxy);
     }
-    else
+    /* 代理创建失败（对象已移除/路径失效）→ 不在这里单独自愈，
+     * 统一交给下方判活 + 轻量重找路径 */
+
+    if (have_data)
+        empty_cnt = 0;
+
+    /* --- 统一判活（本次修复核心）---
+     * 唯一标准：15s 内有没有"新鲜数据"（滚动序号更新过）。
+     * 之前新鲜度看门狗只写在"缓存非空"分支里，缓存一空它就整个失效；
+     * 而"缓存为空"分支的自愈 check_existing_devices 总能从 BlueZ 缓存
+     * 找回那个陈旧的设备对象，永远"成功"、永不升级到 restart_discovery，
+     * 于是 4 秒一轮死循环 —— 日志里"没有看门狗"。 */
+    if (now_ms - g_last_seq_ms > FRESH_WATCHDOG_MS)
     {
-        /* 设备代理创建失败（对象被移除）同样自愈 */
         if (++fail_cnt >= 8)
         {
-            fail_cnt = 0;
+            fail_cnt  = 0;
+            empty_cnt = 0;
             g_dev_path[0] = '\0';
-            s_last_len = 0;
-            LOG_WARN("[POLL] 设备代理失效，重新发现设备");
-            if (!check_existing_devices(g_dev_conn))
-            {
-                restart_discovery(g_dev_conn);
-            }
+            s_last_len = 0;   /* 清去重，防恢复后首帧被吞 */
+            LOG_WARN("[POLL] 数据 %dms 无更新，重启扫描", FRESH_WATCHDOG_MS);
+            /* 空/陈旧缓存都说明控制器不投递新广播了，缓存里的设备对象
+             * 同样是陈旧的 —— 必须真正重启扫描（内部 Stop/Start →
+             * HCI → bluetoothd 升级，深度复位有 5 分钟冷却） */
+            restart_discovery(g_dev_conn);
         }
-        else if (++tick % 20 == 1)
-        {
-            LOG_WARN("[POLL] 设备代理创建失败: %s", g_dev_path);
-        }
+    }
+    else
+    {
+        fail_cnt = 0;   /* 数据新鲜 → 设备正常，重置失败计数 */
+    }
+
+    /* --- 轻量兜底：设备对象可能被 BlueZ 周期性移除（路径失效）---
+     * 只重找路径、不判定死活；数据是否真的恢复仍由上面看门狗把关。
+     * g_dev_path 刚被看门狗清掉时跳过，让 restart_discovery 之后的
+     * InterfacesAdded 能重新接管路径。 */
+    if (!have_data && g_dev_path[0] != '\0' && ++empty_cnt >= 8)
+    {
+        empty_cnt = 0;
+        LOG_WARN("[POLL] 连续读不到 ManufacturerData，重新发现设备");
+        g_dev_path[0] = '\0';
+        check_existing_devices(g_dev_conn);   /* 找到会重设路径；找不到保持空 */
     }
 
     return G_SOURCE_CONTINUE;
