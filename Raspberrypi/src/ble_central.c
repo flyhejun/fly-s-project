@@ -13,6 +13,7 @@
   */
 #include <gio/gio.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "comm_parse.h"
 #include "mqtt_publish.h"
 #include "log.h"
@@ -407,6 +408,25 @@ static gboolean check_existing_devices(GDBusConnection *conn)
 }
 
 /**
+  * @brief  直接操作 HCI 复位控制器，绕过 BlueZ D-Bus
+  * @note   当 BlueZ 全部 D-Bus 手段（Stop/Start/Powered）都无效时，
+  *         通过 hcitool 发 HCI_Reset 从硬件层复位，等价手动 hcitool lescan
+  */
+static void hci_reset_controller(void)
+{
+    int ret = system("hcitool cmd 0x03 0x0003 > /dev/null 2>&1");
+    if (ret == 0)
+    {
+        LOG_WARN("[POLL] HCI 控制器已复位（原始 HCI 命令），等待重初始化");
+        sleep(3);
+    }
+    else
+    {
+        LOG_WARN("[POLL] hcitool 不可用，跳过 HCI 复位");
+    }
+}
+
+/**
   * @brief  适配器断电→上电复位，清控制器残留状态
   * @retval TRUE  复位成功
   *         FALSE 失败（通常是 BlueZ Busy，需更高级别恢复）
@@ -566,16 +586,34 @@ static void restart_discovery(GDBusConnection *conn)
         g_variant_unref(result);
     usleep(200000);
 
-    /* 复位适配器（Powered off/on），清控制器硬件状态 */
+    /* 第 2 级：D-Bus 适配器复位（Powered off/on） */
     LOG_WARN("[POLL] 首次启动失败，复位适配器后重试");
-    if (!adapter_power_cycle(conn))
+    if (adapter_power_cycle(conn))
     {
-        LOG_ERROR("[POLL] 适配器复位失败，放弃（需手动重启 bluetoothd）");
+        /* 复位后旧代理可能失效，重建 */
         g_object_unref(adapter);
-        return;
+        adapter = g_dbus_proxy_new_sync(
+                    conn, G_DBUS_PROXY_FLAGS_NONE,
+                    NULL, "org.bluez",
+                    "/org/bluez/hci0",
+                    "org.bluez.Adapter1",
+                    NULL, NULL);
+        if (!adapter)
+        {
+            LOG_ERROR("[POLL] 复位后重建适配器代理失败");
+            return;
+        }
+        if (start_discovery_once(adapter))
+        {
+            g_object_unref(adapter);
+            return;
+        }
+        LOG_WARN("[POLL] D-Bus 复位后仍失败，尝试 HCI 直接复位");
     }
 
-    /* 适配器复位后旧代理可能失效，重建 */
+    /* 第 3 级：直接操作 HCI 复位控制器（绕过 BlueZ，等价手动 hcitool） */
+    hci_reset_controller();
+
     g_object_unref(adapter);
     adapter = g_dbus_proxy_new_sync(
                 conn, G_DBUS_PROXY_FLAGS_NONE,
@@ -585,13 +623,12 @@ static void restart_discovery(GDBusConnection *conn)
                 NULL, NULL);
     if (!adapter)
     {
-        LOG_ERROR("[POLL] 复位后重建适配器代理失败");
+        LOG_ERROR("[POLL] HCI 复位后重建适配器代理失败");
         return;
     }
 
-    /* 第 2 轮：复位后重新启动 discovery */
     if (!start_discovery_once(adapter))
-        LOG_ERROR("[POLL] 复位适配器后仍无法启动 discovery");
+        LOG_ERROR("[POLL] HCI 复位后仍无法启动 discovery");
 
     g_object_unref(adapter);
 }
