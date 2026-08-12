@@ -341,7 +341,7 @@ static gboolean check_existing_devices(GDBusConnection *conn)
     GVariant *result = g_dbus_proxy_call_sync(
                 om_proxy, "GetManagedObjects",
                 NULL, G_DBUS_CALL_FLAGS_NONE,
-                -1, NULL, &error);
+                5000, NULL, &error);
 
     g_object_unref(om_proxy);
 
@@ -460,7 +460,7 @@ static gboolean adapter_power_cycle(GDBusConnection *conn)
                 "Powered", g_variant_new_boolean(FALSE));
     ret = g_dbus_proxy_call_sync(
                 props, "Set", params,
-                G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+                G_DBUS_CALL_FLAGS_NONE, 5000, NULL, &error);
     if (error)
     {
         LOG_ERROR("[POLL] 设置 Powered=FALSE 失败: %s", error->message);
@@ -480,7 +480,7 @@ static gboolean adapter_power_cycle(GDBusConnection *conn)
                 "Powered", g_variant_new_boolean(TRUE));
     ret = g_dbus_proxy_call_sync(
                 props, "Set", params,
-                G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+                G_DBUS_CALL_FLAGS_NONE, 5000, NULL, &error);
     if (error)
     {
         LOG_ERROR("[POLL] 设置 Powered=TRUE 失败: %s", error->message);
@@ -516,7 +516,7 @@ static gboolean start_discovery_once(GDBusProxy *adapter)
         result = g_dbus_proxy_call_sync(
             adapter, "SetDiscoveryFilter",
             g_variant_new_tuple(&filter, 1),
-            G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+            G_DBUS_CALL_FLAGS_NONE, 5000, NULL, &error);
 
         if (error)
         {

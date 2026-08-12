@@ -138,7 +138,7 @@ static void ble_gatt_write(const uint8_t *frame, size_t len)
     }
 
     result = g_dbus_proxy_call_sync(om_proxy, "GetManagedObjects", NULL,
-        G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+        G_DBUS_CALL_FLAGS_NONE, 5000, NULL, &error);
 
     if (error) 
     {
