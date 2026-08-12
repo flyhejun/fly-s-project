@@ -631,7 +631,35 @@ static void restart_discovery(GDBusConnection *conn)
     }
 
     if (!start_discovery_once(adapter))
-        LOG_ERROR("[POLL] HCI 复位后仍无法启动 discovery");
+    {
+        LOG_ERROR("[POLL] HCI 复位后仍失败，重启 bluetoothd");
+
+        /* 第 4 级：重启 bluetoothd，清软件层残留状态 */
+        if (system("systemctl restart bluetooth") == 0)
+        {
+            sleep(5);   /* 等 bluetoothd 完全启动 + 控制器初始化 */
+
+            g_object_unref(adapter);
+            adapter = g_dbus_proxy_new_sync(
+                        conn, G_DBUS_PROXY_FLAGS_NONE,
+                        NULL, "org.bluez",
+                        "/org/bluez/hci0",
+                        "org.bluez.Adapter1",
+                        NULL, NULL);
+            if (!adapter)
+            {
+                LOG_ERROR("[POLL] bluetoothd 重启后重建适配器代理失败");
+                return;
+            }
+
+            if (!start_discovery_once(adapter))
+                LOG_ERROR("[POLL] 重启 bluetoothd 后仍无法启动 discovery");
+        }
+        else
+        {
+            LOG_ERROR("[POLL] 重启 bluetoothd 失败，放弃");
+        }
+    }
 
     g_object_unref(adapter);
 }
