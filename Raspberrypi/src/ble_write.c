@@ -86,15 +86,29 @@ static void ble_gatt_write(const uint8_t *frame, size_t len)
     }
 
     /* ---- 2. 建立连接（已连接则忽略报错，继续走后续流程） ---- */
-    result = g_dbus_proxy_call_sync(device_proxy, "Connect", NULL,
-        G_DBUS_CALL_FLAGS_NONE, 10000, NULL, &error);
-
-    if (error) 
+    for (i = 0; i < 2; i++)
     {
-        LOG_WARN("[GATT] Connect 返回: %s (继续)", error->message);
-        g_clear_error(&error);
+        result = g_dbus_proxy_call_sync(device_proxy, "Connect", NULL,
+            G_DBUS_CALL_FLAGS_NONE, 25000, NULL, &error);
+
+        if (error)
+        {
+            LOG_WARN("[GATT] Connect 返回: %s (尝试 %d/2)", error->message, i + 1);
+            g_clear_error(&error);
+            if (i == 0)
+            {
+                /* 首次失败 → 等 1s 再试（ESP32 可能正更新广播数据） */
+                LOG_INFO("[GATT] 等 1s 后重试连接...");
+                sleep(1);
+                continue;
+            }
+        }
+        else
+        {
+            break;   /* 成功 */
+        }
     }
-    if (result) 
+    if (result)
     {
         g_variant_unref(result);
         result = NULL;
