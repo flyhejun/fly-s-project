@@ -77,6 +77,9 @@ static uint32_t    g_ble_wait_tick   = 0;  /* WAIT_READY 起始时间戳 */
 /* AT+BLEADVDATA 运行时错误计数（由 RX ERROR 行触发） */
 volatile uint8_t g_ble_advdata_err   = 0;
 
+/* 广播滚动序号：每帧 +1，Pi 端剥离此字节判断广播存活 */
+static uint8_t    s_adv_seq          = 0;
+
 #define AT_MAX_RETRY  3
 #define AT_TIMEOUT_MS 1000
 #define BLEINIT_TIMEOUT_MS 5000   /* BLEINIT 初始化 BLE 栈耗时较长 */
@@ -300,13 +303,14 @@ void ESP32_Send(const uint8_t *buf, uint16_t len)
     ad[ad_len++] = 'a';
     ad[ad_len++] = 'l';
     ad[ad_len++] = 'l';
-    /* Manufacturer Data AD（含帧数据） */
-    ad[ad_len++] = len + 3;      /* 长度 = 1(type) + 2(mfg_id) + len */
+    /* Manufacturer Data AD（含帧数据 + 滚动序号字节） */
+    ad[ad_len++] = len + 4;      /* 长度 = 1(type) + 2(mfg_id) + len + 1(seq) */
     ad[ad_len++] = 0xFF;         /* AD Type: Manufacturer Specific Data */
     ad[ad_len++] = 0xE5;         /* Company ID low  (0x02E5 = Espressif 官方, 小端) */
     ad[ad_len++] = 0x02;         /* Company ID high */
     memcpy(&ad[ad_len], buf, len);
     ad_len += len;
+    ad[ad_len++] = s_adv_seq++;  /* 滚动序号：Pi 用它判断广播是否还活着 */
 
     /* ---- 2. 生成 AT 命令 ---- */
     hex_pos = strlen("AT+BLEADVDATA=\"");
