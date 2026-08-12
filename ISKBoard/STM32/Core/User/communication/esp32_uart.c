@@ -631,20 +631,41 @@ void ESP32_RX_Poll(void)
   *
   * 注意：必须放任务里，不能放中断——HAL_UART_Transmit 是阻塞的。
   */
+/**
+  * @brief  广播保活：URC 触发 + 主动定时重启（兜底）
+  *
+  * 部分 ESP-AT 固件不发 +BLEDISCONN URC，导致断开后广播永不恢复。
+  * 这里双保险：URC 标志触发立即重启，另外每 15 秒主动停→启一次，
+  * 确保广播始终在可连接状态。ADVSTOP 前先确认广播确实在运行才停。
+  */
 void ESP32_CheckAdvStatus(void)
 {
+    static uint32_t s_last_restart = 0;
+    uint32_t now = HAL_GetTick();
+    int need_restart = 0;
+
+    /* 路径 1：+BLEDISCONN URC 到达（部分固件有效） */
     if (g_ble_adv_status)
     {
-        int ret;
         g_ble_adv_status = 0;
+        need_restart = 1;
+    }
 
-        /* 先停后启：部分 AT 固件断开后会残留广播状态，
-         * 直接 AT+BLEADVSTART 可能冲突报 ERROR 或停掉广播 */
+    /* 路径 2：主动定时重启，兜底固件不报 URC 的情况 */
+    if (now - s_last_restart > 15000)
+        need_restart = 1;
+
+    if (need_restart)
+    {
+        int ret;
+
         send_at_cmd("AT+BLEADVSTOP", 500);
-        HAL_Delay(200);   /* 等广播停止状态稳定 */
+        HAL_Delay(200);
 
         ret = send_at_cmd("AT+BLEADVSTART", 1000);
-        if (ret != 1)
+        if (ret == 1)
+            s_last_restart = now;
+        else
             printf("[COMM] BLE 广播重启失败 (ret=%d)\n", ret);
     }
 }
