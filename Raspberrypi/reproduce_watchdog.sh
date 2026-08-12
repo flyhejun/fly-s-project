@@ -10,7 +10,8 @@
 
 set -u
 LOG=isk_gateway.log
-GW_DIR=~/hejunfei/fall_project/Raspberrypi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"   # 以脚本所在目录为准，避免 sudo 下 ~ 解析成 /root
 STOP_S=25      # 广播停止观察时长
 RECOVER_S=25   # 恢复观察时长
 
@@ -19,7 +20,6 @@ sudo pkill -9 isk_gateway 2>/dev/null
 sleep 2
 
 echo "=== [2/5] 启动网关（后台） ==="
-cd "$GW_DIR"
 sudo ./isk_gateway > /dev/null 2>&1 &
 sleep 10
 
