@@ -30,6 +30,7 @@ static guint            s_poll_src = 0;   /* 500ms 轮询定时器句柄（防�
 static void process_mfg_data(GVariant *mfg_data);
 static void process_advertising_data(GVariant *props);
 static gboolean check_existing_devices(GDBusConnection *conn);
+static gboolean adapter_power_cycle(GDBusConnection *conn);
 static void restart_discovery(GDBusConnection *conn);
 
 /* ================================================================
@@ -405,12 +406,17 @@ static gboolean check_existing_devices(GDBusConnection *conn)
     return found;
 }
 
-static void adapter_power_cycle(GDBusConnection *conn)
+/**
+  * @brief  适配器断电→上电复位，清控制器残留状态
+  * @retval TRUE  复位成功
+  *         FALSE 失败（通常是 BlueZ Busy，需更高级别恢复）
+  */
+static gboolean adapter_power_cycle(GDBusConnection *conn)
 {
-    GDBusProxy      *props;
-    GVariant        *params;
-    GVariant        *ret;
-    GError          *error = NULL;
+    GDBusProxy *props;
+    GVariant   *params;
+    GVariant   *ret;
+    GError     *error = NULL;
 
     props = g_dbus_proxy_new_sync(
                 conn, G_DBUS_PROXY_FLAGS_NONE,
@@ -422,9 +428,10 @@ static void adapter_power_cycle(GDBusConnection *conn)
     if (!props)
     {
         LOG_ERROR("[POLL] 创建 Properties 代理失败，无法复位适配器");
-        return;
+        return FALSE;
     }
 
+    /* 1. Powered=false：控制器复位 */
     params = g_variant_new(
                 "(ssv)", "org.bluez.Adapter1",
                 "Powered", g_variant_new_boolean(FALSE));
@@ -435,13 +442,16 @@ static void adapter_power_cycle(GDBusConnection *conn)
     {
         LOG_ERROR("[POLL] 设置 Powered=FALSE 失败: %s", error->message);
         g_clear_error(&error);
+        if (ret)
+            g_variant_unref(ret);
+        g_object_unref(props);
+        return FALSE;
     }
-    else if (ret)
-    {
+    if (ret)
         g_variant_unref(ret);
-    }
     usleep(500000);
 
+    /* 2. Powered=true：重新上电 */
     params = g_variant_new(
                 "(ssv)", "org.bluez.Adapter1",
                 "Powered", g_variant_new_boolean(TRUE));
@@ -452,15 +462,18 @@ static void adapter_power_cycle(GDBusConnection *conn)
     {
         LOG_ERROR("[POLL] 设置 Powered=TRUE 失败: %s", error->message);
         g_clear_error(&error);
+        if (ret)
+            g_variant_unref(ret);
+        g_object_unref(props);
+        return FALSE;
     }
-    else if (ret)
-    {
+    if (ret)
         g_variant_unref(ret);
-    }
     usleep(500000);
 
     g_object_unref(props);
     LOG_WARN("[POLL] 适配器已复位（Powered off/on）");
+    return TRUE;
 }
 
 /**
@@ -473,18 +486,7 @@ static gboolean start_discovery_once(GDBusProxy *adapter)
     GVariant *result;
     GError   *error = NULL;
 
-    /* 1. StopDiscovery：清残留状态（本来就停着则忽略失败） */
-    result = g_dbus_proxy_call_sync(
-                adapter, "StopDiscovery",
-                NULL, G_DBUS_CALL_FLAGS_NONE,
-                3000, NULL, NULL);
-    if (result)
-    {
-        g_variant_unref(result);
-    }
-    usleep(200000);   /* 等 BlueZ 内部状态稳定 */
-
-    /* 2. SetDiscoveryFilter：纯 LE */
+    /* SetDiscoveryFilter：纯 LE */
     {
         GVariant *filter = g_variant_new_parsed(
             "{'Transport': <'le'>}");
@@ -505,7 +507,7 @@ static gboolean start_discovery_once(GDBusProxy *adapter)
         }
     }
 
-    /* 3. StartDiscovery */
+    /* StartDiscovery */
     result = g_dbus_proxy_call_sync(
                 adapter, "StartDiscovery",
                 NULL, G_DBUS_CALL_FLAGS_NONE,
@@ -529,8 +531,10 @@ static gboolean start_discovery_once(GDBusProxy *adapter)
   */
 static void restart_discovery(GDBusConnection *conn)
 {
-    GError *error = NULL;
+    GError     *error = NULL;
+    GVariant   *result;
 
+    /* 创建适配器代理 */
     GDBusProxy *adapter = g_dbus_proxy_new_sync(
                 conn, G_DBUS_PROXY_FLAGS_NONE,
                 NULL, "org.bluez",
@@ -546,18 +550,46 @@ static void restart_discovery(GDBusConnection *conn)
     }
     LOG_INFO("BLE 适配器就绪");
 
-    /* 第 1 轮：直接启动 */
+    /* 第 1 轮：Filter + Start（不 Stop，首次启动无需清残留） */
     if (start_discovery_once(adapter))
     {
         g_object_unref(adapter);
         return;
     }
 
-    /* 失败（常见 InProgress）→ 复位适配器，清控制器残留扫描位 */
-    LOG_WARN("[POLL] 首次启动失败，复位适配器后重试");
-    adapter_power_cycle(conn);
+    /* 失败 → 先尝试 Stop 清残留扫描（此时 Stop 才真正有意义） */
+    result = g_dbus_proxy_call_sync(
+                adapter, "StopDiscovery",
+                NULL, G_DBUS_CALL_FLAGS_NONE,
+                3000, NULL, NULL);
+    if (result)
+        g_variant_unref(result);
+    usleep(200000);
 
-    /* 第 2 轮：复位后重试 */
+    /* 复位适配器（Powered off/on），清控制器硬件状态 */
+    LOG_WARN("[POLL] 首次启动失败，复位适配器后重试");
+    if (!adapter_power_cycle(conn))
+    {
+        LOG_ERROR("[POLL] 适配器复位失败，放弃（需手动重启 bluetoothd）");
+        g_object_unref(adapter);
+        return;
+    }
+
+    /* 适配器复位后旧代理可能失效，重建 */
+    g_object_unref(adapter);
+    adapter = g_dbus_proxy_new_sync(
+                conn, G_DBUS_PROXY_FLAGS_NONE,
+                NULL, "org.bluez",
+                "/org/bluez/hci0",
+                "org.bluez.Adapter1",
+                NULL, NULL);
+    if (!adapter)
+    {
+        LOG_ERROR("[POLL] 复位后重建适配器代理失败");
+        return;
+    }
+
+    /* 第 2 轮：复位后重新启动 discovery */
     if (!start_discovery_once(adapter))
         LOG_ERROR("[POLL] 复位适配器后仍无法启动 discovery");
 
