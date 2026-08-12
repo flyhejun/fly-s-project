@@ -635,8 +635,11 @@ void ESP32_RX_Poll(void)
   * @brief  广播保活：URC 触发 + 主动定时重启（兜底）
   *
   * 部分 ESP-AT 固件不发 +BLEDISCONN URC，导致断开后广播永不恢复。
-  * 这里双保险：URC 标志触发立即重启，另外每 15 秒主动停→启一次，
-  * 确保广播始终在可连接状态。ADVSTOP 前先确认广播确实在运行才停。
+  * 这里双保险：URC 标志触发立即重启，另外每 15 秒主动发一次
+  * AT+BLEADVSTART 确保广播在可连接状态。
+  *
+  * 注意：只发 AT+BLEADVSTART（fire-and-forget，不 Stop 不等响应），
+  * 避免 UART 阻塞和 ADV 数据被清空。广播已在运行则 ESP32 静默拒绝。
   */
 void ESP32_CheckAdvStatus(void)
 {
@@ -651,22 +654,16 @@ void ESP32_CheckAdvStatus(void)
         need_restart = 1;
     }
 
-    /* 路径 2：主动定时重启，兜底固件不报 URC 的情况 */
+    /* 路径 2：主动定时（每 15s），兜底固件不报 URC */
     if (now - s_last_restart > 15000)
         need_restart = 1;
 
     if (need_restart)
     {
-        int ret;
-
-        send_at_cmd("AT+BLEADVSTOP", 500);
-        HAL_Delay(200);
-
-        ret = send_at_cmd("AT+BLEADVSTART", 1000);
-        if (ret == 1)
-            s_last_restart = now;
-        else
-            printf("[COMM] BLE 广播重启失败 (ret=%d)\n", ret);
+        /* fire-and-forget：不等响应，不 Stop，
+         * 广播已运行则 ESP32 忽略此命令，不会清空 ADV 数据 */
+        uart2_send((const uint8_t *)"AT+BLEADVSTART\r\n", 17);
+        s_last_restart = now;   /* 无论成败都更新时间，防止重试风暴 */
     }
 }
 
