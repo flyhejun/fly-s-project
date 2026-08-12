@@ -414,7 +414,9 @@ static gboolean check_existing_devices(GDBusConnection *conn)
   */
 static void hci_reset_controller(void)
 {
-    int ret = system("hcitool cmd 0x03 0x0003 > /dev/null 2>&1");
+    /* hcitool 发原始 HCI 命令需要 root 权限（CAP_NET_RAW），
+     * 网关必须以 sudo 运行才能走这条路径 */
+    int ret = system("/usr/bin/hcitool cmd 0x03 0x0003 > /dev/null 2>&1");
     if (ret == 0)
     {
         LOG_WARN("[POLL] HCI 控制器已复位（原始 HCI 命令），等待重初始化");
@@ -422,7 +424,7 @@ static void hci_reset_controller(void)
     }
     else
     {
-        LOG_WARN("[POLL] hcitool 不可用，跳过 HCI 复位");
+        LOG_WARN("[POLL] HCI 复位失败（hcitool 不可用或权限不足，试 sudo ./isk_gateway）");
     }
 }
 
