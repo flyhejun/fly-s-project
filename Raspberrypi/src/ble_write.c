@@ -85,7 +85,25 @@ static void ble_gatt_write(const uint8_t *frame, size_t len)
         return;
     }
 
-    /* ---- 2. 建立连接（已连接则忽略报错，继续走后续流程） ---- */
+    /* ---- 2. 暂停 LE 扫描（Pi 控制器扫描+连接不可并存）---- */
+    {
+        GDBusProxy *adapter = g_dbus_proxy_new_sync(
+            g_conn, G_DBUS_PROXY_FLAGS_NONE, NULL,
+            "org.bluez", "/org/bluez/hci0", "org.bluez.Adapter1",
+            NULL, NULL);
+        if (adapter)
+        {
+            GVariant *stop = g_dbus_proxy_call_sync(
+                adapter, "StopDiscovery", NULL,
+                G_DBUS_CALL_FLAGS_NONE, 3000, NULL, NULL);
+            if (stop)
+                g_variant_unref(stop);
+            g_object_unref(adapter);
+            usleep(200000);   /* 等扫描状态稳定 */
+        }
+    }
+
+    /* ---- 3. 建立连接（已连接则忽略报错，继续走后续流程） ---- */
     for (i = 0; i < 2; i++)
     {
         result = g_dbus_proxy_call_sync(device_proxy, "Connect", NULL,
@@ -114,7 +132,7 @@ static void ble_gatt_write(const uint8_t *frame, size_t len)
         result = NULL;
     }
 
-    /* ---- 3. 轮询等待 GATT 服务发现完成 ---- */
+    /* ---- 4. 轮询等待 GATT 服务发现完成 ---- */
     usleep(500000);   /* 先等 500ms，ESP32 AT 固件服务发现启动慢 */
     for (i = 0; i < 100; i++)
     {
@@ -138,7 +156,7 @@ static void ble_gatt_write(const uint8_t *frame, size_t len)
     }
     LOG_INFO("[GATT] 服务发现完成 (%d ms)", 500 + (i + 1) * 100);
 
-    /* ---- 4. 遍历 GATT 对象树，找 UUID 匹配的特征值 ---- */
+    /* ---- 5. 遍历 GATT 对象树，找 UUID 匹配的特征值 ---- */
     om_proxy = g_dbus_proxy_new_sync(
         g_conn, G_DBUS_PROXY_FLAGS_NONE, NULL,
         "org.bluez", "/", "org.freedesktop.DBus.ObjectManager",
@@ -209,7 +227,7 @@ static void ble_gatt_write(const uint8_t *frame, size_t len)
     }
     LOG_INFO("[GATT] 找到特征值: %s", char_path);
 
-    /* ---- 5. WriteValue：把帧写入特征值 ---- */
+    /* ---- 6. WriteValue：把帧写入特征值 ---- */
     {
         GDBusProxy *char_proxy = g_dbus_proxy_new_sync(
             g_conn, G_DBUS_PROXY_FLAGS_NONE, NULL,
@@ -247,7 +265,7 @@ static void ble_gatt_write(const uint8_t *frame, size_t len)
     }
 
 disconnect:
-    /* ---- 6. 断开连接 ---- */
+    /* ---- 7. 断开连接 ---- */
     g_dbus_proxy_call_sync(device_proxy, "Disconnect", NULL,
         G_DBUS_CALL_FLAGS_NONE, 5000, NULL, NULL);
     LOG_INFO("[GATT] 已断开");
@@ -256,6 +274,33 @@ disconnect:
         g_object_unref(om_proxy);
     if (device_proxy)
         g_object_unref(device_proxy);
+
+    /* ---- 8. 恢复 LE 扫描 ---- */
+    {
+        GDBusProxy *adapter = g_dbus_proxy_new_sync(
+            g_conn, G_DBUS_PROXY_FLAGS_NONE, NULL,
+            "org.bluez", "/org/bluez/hci0", "org.bluez.Adapter1",
+            NULL, NULL);
+        if (adapter)
+        {
+            GVariant *filter = g_variant_new_parsed("{'Transport': <'le'>}");
+            GVariant *ret = g_dbus_proxy_call_sync(
+                adapter, "SetDiscoveryFilter",
+                g_variant_new_tuple(&filter, 1),
+                G_DBUS_CALL_FLAGS_NONE, -1, NULL, NULL);
+            if (ret)
+                g_variant_unref(ret);
+
+            ret = g_dbus_proxy_call_sync(
+                adapter, "StartDiscovery", NULL,
+                G_DBUS_CALL_FLAGS_NONE, 10000, NULL, NULL);
+            if (ret)
+                g_variant_unref(ret);
+
+            g_object_unref(adapter);
+            LOG_INFO("[GATT] LE 扫描已恢复");
+        }
+    }
 }
 
 static void *ble_write_thread(void *arg)
