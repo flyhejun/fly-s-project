@@ -391,7 +391,7 @@ void commTask(void *argument)
     /* 轮询接收下行指令（无中断，结构性避免风暴） */
     ESP32_RX_Poll();
 
-    /* 100ms 节拍：等待事件帧最多 100ms（超时即到 10Hz 周期） */
+    /* 100ms 节拍：等待事件帧最多 100ms */
     if (osMessageQueueGet(commEventQueueHandle, &msg, NULL, 100) == osOK)
     {
         /* 事件帧到达：本周期让位，不发实时帧，避免双 ADVDA */
@@ -399,16 +399,23 @@ void commTask(void *argument)
     }
     else if (g_data_stream)
     {
-        tx_len = Comm_PackRealTime(tx_buf, FallDetect_GetAccelSq(),
-                                   FallDetect_GetGyroSq());
-        ESP32_Send(tx_buf, tx_len);
-
-        /* 诊断：每 100 帧（10 秒）打一次发送计数 */
+        /* 实时帧降频到 2Hz（每 5 个 100ms 节拍发一次），
+         * 减少 ADV 更新频率，给 Pi 留足 BLE 连接窗口 */
+        static int s_rt_skip = 0;
+        if (++s_rt_skip >= 5)
         {
-            static uint32_t s_send_cnt = 0;
-            if (++s_send_cnt % 100 == 0)
-                printf("[COMM] sent %lu frames, accel_sq=%lu\n",
-                       s_send_cnt, FallDetect_GetAccelSq());
+            s_rt_skip = 0;
+            tx_len = Comm_PackRealTime(tx_buf, FallDetect_GetAccelSq(),
+                                       FallDetect_GetGyroSq());
+            ESP32_Send(tx_buf, tx_len);
+
+            /* 诊断：每 20 帧（10 秒）打一次发送计数 */
+            {
+                static uint32_t s_send_cnt = 0;
+                if (++s_send_cnt % 20 == 0)
+                    printf("[COMM] sent %lu frames, accel_sq=%lu\n",
+                           s_send_cnt, FallDetect_GetAccelSq());
+            }
         }
     }
 
