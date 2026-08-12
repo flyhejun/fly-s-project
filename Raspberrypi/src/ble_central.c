@@ -33,6 +33,7 @@ static guint            s_poll_src = 0;   /* 500ms 轮询定时器句柄（防�
 static uint8_t   s_last_frame[32];   /* 去重：上一帧内容（不含序号） */
 static uint16_t  s_last_len   = 0;
 static uint8_t   s_last_seq   = 0xFF;  /* 上一广播序号（初值确保首帧触发） */
+static gboolean  s_resume_pending = FALSE;   /* 断线恢复：下个新广播强制发布一次 */
 static gint64    g_last_seq_ms = 0;    /* 最近序号更新时刻（monotonic ms） */
 
 /* ---- 深度复位冷却：HCI/bluetoothd 重启用，防频繁锤控制器崩溃 ---- */
@@ -124,7 +125,7 @@ static gboolean poll_manufacturer_data(gpointer user_data)
             fail_cnt  = 0;
             empty_cnt = 0;
             g_dev_path[0] = '\0';
-            s_last_len = 0;   /* 清去重，防恢复后首帧被吞 */
+            s_resume_pending = TRUE;   /* 替代清去重：恢复后首个新广播强制发布，防首帧被吞 */
             LOG_WARN("[POLL] 数据 %dms 无更新，重启扫描", FRESH_WATCHDOG_MS);
             /* 空/陈旧缓存都说明控制器不投递新广播了，缓存里的设备对象
              * 同样是陈旧的 —— 必须真正重启扫描（内部 Stop/Start →
@@ -182,13 +183,14 @@ static void process_mfg_data(GVariant *mfg_data)
 
         /* 广播数据 = 协议帧 + 末尾 1 字节滚动序号（STM32 附加）。
          * 序号变化 → 广播还在更新（存活信号，看门狗依据）；
-         * 去重只按帧内容，静止时帧相同仍去重，不刷 MQTT */
+         * 静止帧去重不刷 MQTT；断线恢复后的首个新广播例外，强制发布 */
         if (len > 1)
         {
-            uint8_t seq       = data[len - 1];
-            gsize   frame_len = len - 1;
+            uint8_t  seq       = data[len - 1];
+            gsize    frame_len = len - 1;
+            gboolean new_seq   = (seq != s_last_seq);
 
-            if (seq != s_last_seq)
+            if (new_seq)
             {
                 s_last_seq    = seq;
                 g_last_seq_ms = g_get_monotonic_time() / 1000;
@@ -196,12 +198,18 @@ static void process_mfg_data(GVariant *mfg_data)
 
             if (comm_parse_frame(data, frame_len, &frame))
             {
-                if (frame_len == s_last_len
-                    && memcmp(data, s_last_frame, frame_len) == 0)
+                /* 恢复待发标志：断线后首个新广播（seq 已滚动）强制发布一次，
+                 * 作为"已恢复"信号，字节相同也不吞；陈旧缓存帧 seq 不变、
+                 * 不满足 new_seq，仍按字节去重 —— 不会把断线前的旧数据当新数据刷 */
+                if (new_seq && s_resume_pending)
+                    s_resume_pending = FALSE;   /* 恢复信号已上报，回到正常去重 */
+                else if (frame_len == s_last_len
+                         && memcmp(data, s_last_frame, frame_len) == 0)
                 {
                     g_variant_unref(value);
                     continue;
                 }
+
                 memcpy(s_last_frame, data, frame_len);
                 s_last_len = (uint16_t)frame_len;
                 LOG_INFO("[ADV] mfg_id=0x%04X, len=%zu", mfg_id, len);
