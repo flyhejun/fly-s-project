@@ -592,31 +592,27 @@ static void restart_discovery(GDBusConnection *conn)
     {
         LOG_ERROR("[POLL] HCI 复位后仍失败，重启 bluetoothd");
 
-        /* 第 3 级：重启 bluetoothd，清软件层残留状态 */
-        if (system("timeout 10 systemctl restart bluetooth") == 0)
-        {
-            sleep(5);   /* 等 bluetoothd 完全启动 + 控制器初始化 */
+        /* 第 3 级：重启 bluetoothd，清软件层残留状态。
+         * 不依赖 system() 返回码：bluetoothd 可能重启成功但 systemctl
+         * 被 timeout 打断返回非零（曾误判"失败"）。执行后无条件等待重试 */
+        system("timeout 20 systemctl restart bluetooth");
+        sleep(5);   /* 等 bluetoothd 完全启动 + 控制器初始化 */
 
-            g_object_unref(adapter);
-            adapter = g_dbus_proxy_new_sync(
-                        conn, G_DBUS_PROXY_FLAGS_NONE,
-                        NULL, "org.bluez",
-                        "/org/bluez/hci0",
-                        "org.bluez.Adapter1",
-                        NULL, NULL);
-            if (!adapter)
-            {
-                LOG_ERROR("[POLL] bluetoothd 重启后重建适配器代理失败");
-                return;
-            }
-
-            if (!start_discovery_once(adapter))
-                LOG_ERROR("[POLL] 重启 bluetoothd 后仍无法启动 discovery");
-        }
-        else
+        g_object_unref(adapter);
+        adapter = g_dbus_proxy_new_sync(
+                    conn, G_DBUS_PROXY_FLAGS_NONE,
+                    NULL, "org.bluez",
+                    "/org/bluez/hci0",
+                    "org.bluez.Adapter1",
+                    NULL, NULL);
+        if (!adapter)
         {
-            LOG_ERROR("[POLL] 重启 bluetoothd 失败，放弃");
+            LOG_ERROR("[POLL] bluetoothd 重启后重建适配器代理失败");
+            return;
         }
+
+        if (!start_discovery_once(adapter))
+            LOG_ERROR("[POLL] 重启 bluetoothd 后仍无法启动 discovery");
     }
 
     /* 最终兜底：所有恢复均未成功开启新扫描，但如果 BlueZ 已有扫描在跑就直接复用 */
