@@ -392,6 +392,23 @@ void ESP32_RX_Char(uint8_t ch)
             {
                 rx_line[rx_pos++] = '\0';
 
+                /* 过滤 BLE 连接期间的二进制垃圾（ESP32 发 raw BLE 事件）：
+                 * 只处理可打印 ASCII 行，二进制行直接丢弃 */
+                {
+                    int k;
+                    int is_binary = 0;
+                    for (k = 0; k < rx_pos - 1; k++)
+                    {
+                        if ((unsigned char)rx_line[k] < 0x20
+                            || (unsigned char)rx_line[k] > 0x7E)
+                        {
+                            is_binary = 1;
+                            break;
+                        }
+                    }
+                    if (!is_binary)
+                    {
+
                 /* 诊断：ESP32 的一切非 URC 响应（OK/ERROR/其他） */
                 if (strstr(rx_line, "ERROR"))
                 {
@@ -408,6 +425,8 @@ void ESP32_RX_Char(uint8_t ch)
 
                 parse_ble_status(rx_line);
                 parse_write_urc(rx_line);   /* +WRITE URC → 下行指令帧 */
+                    }  /* !is_binary */
+                }
             }
             rx_pos = 0;
         }
