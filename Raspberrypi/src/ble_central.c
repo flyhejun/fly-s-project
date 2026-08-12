@@ -417,7 +417,7 @@ static void hci_reset_controller(void)
 {
     /* hcitool 发原始 HCI 命令需要 root 权限（CAP_NET_RAW），
      * 网关必须以 sudo 运行才能走这条路径 */
-    int ret = system("/usr/bin/hcitool cmd 0x03 0x0003 > /dev/null 2>&1");
+    int ret = system("timeout 5 /usr/bin/hcitool cmd 0x03 0x0003 > /dev/null 2>&1");
     if (ret == 0)
     {
         LOG_WARN("[POLL] HCI 控制器已复位（原始 HCI 命令），等待重初始化");
@@ -635,7 +635,7 @@ static void restart_discovery(GDBusConnection *conn)
         LOG_ERROR("[POLL] HCI 复位后仍失败，重启 bluetoothd");
 
         /* 第 4 级：重启 bluetoothd，清软件层残留状态 */
-        if (system("systemctl restart bluetooth") == 0)
+        if (system("timeout 10 systemctl restart bluetooth") == 0)
         {
             sleep(5);   /* 等 bluetoothd 完全启动 + 控制器初始化 */
 
