@@ -28,11 +28,20 @@ static GDBusConnection *g_dev_conn = NULL;
 static char             g_dev_path[128];
 static guint            s_poll_src = 0;   /* 500ms 轮询定时器句柄（防自愈时重复添加） */
 
+/* ---- 数据新鲜度看门狗状态 ---- */
+#define FRESH_WATCHDOG_MS   15000   /* 15s 无序号更新 = 判定失联 */
+static uint8_t   s_last_frame[32];   /* 去重：上一帧内容（不含序号） */
+static uint16_t  s_last_len   = 0;
+static uint8_t   s_last_seq   = 0xFF;  /* 上一广播序号（初值确保首帧触发） */
+static gint64    g_last_seq_ms = 0;    /* 最近序号更新时刻（monotonic ms） */
+
+/* ble_write.c 定义的标志：下行 GATT 期间暂停扫描，poll 需配合跳过自愈 */
+extern volatile int g_scan_suspended;
+
 /* ---- 前置声明 ---- */
 static void process_mfg_data(GVariant *mfg_data);
 static void process_advertising_data(GVariant *props);
 static gboolean check_existing_devices(GDBusConnection *conn);
-static gboolean adapter_power_cycle(GDBusConnection *conn);
 static void restart_discovery(GDBusConnection *conn);
 
 /* ================================================================
@@ -54,6 +63,10 @@ static gboolean poll_manufacturer_data(gpointer user_data)
     static int  fail_cnt = 0;   /* 连续失败计数（自愈触发阈值） */
     (void)user_data;
 
+    /* 下行 GATT 期间扫描被暂停：跳过本轮，避免误触发自愈 */
+    if (g_scan_suspended)
+        return G_SOURCE_CONTINUE;
+
     if (g_dev_path[0] == '\0')
         return G_SOURCE_CONTINUE;
 
@@ -67,17 +80,43 @@ static gboolean poll_manufacturer_data(gpointer user_data)
         props = g_dbus_proxy_get_cached_property(dev_proxy, "ManufacturerData");
         if (props)
         {
-            fail_cnt = 0;   /* 读到数据 → 设备正常，重置失败计数 */
-            process_mfg_data(props);
+            gint64 now_ms = g_get_monotonic_time() / 1000;
+
+            /* 首次轮询：以当前时间作基准 */
+            if (g_last_seq_ms == 0)
+                g_last_seq_ms = now_ms;
+
+            if (now_ms - g_last_seq_ms > FRESH_WATCHDOG_MS)
+            {
+                /* 缓存有数据但序号久未更新 → 控制器可能已卡死，
+                 * 之前的 fail_cnt 逻辑只认"缓存为空"，这里补上"数据陈旧" */
+                if (++fail_cnt >= 8)
+                {
+                    fail_cnt = 0;
+                    g_dev_path[0] = '\0';
+                    s_last_len = 0;   /* 清去重，防恢复后首帧被吞 */
+                    LOG_WARN("[POLL] 数据 %dms 无更新，重新发现设备", FRESH_WATCHDOG_MS);
+                    if (!check_existing_devices(g_dev_conn))
+                    {
+                        restart_discovery(g_dev_conn);
+                    }
+                }
+            }
+            else
+            {
+                fail_cnt = 0;   /* 数据新鲜 → 设备正常，重置失败计数 */
+                process_mfg_data(props);
+            }
             g_variant_unref(props);
         }
         else
         {
-            /* 连续 20 次（10 秒）读不到 → BlueZ 设备对象可能已失效，重新发现 */
+            /* 连续 8 次（4 秒）读不到 → BlueZ 设备对象可能已失效，重新发现 */
             if (++fail_cnt >= 8)
             {
                 fail_cnt = 0;
                 g_dev_path[0] = '\0';
+                s_last_len = 0;
                 LOG_WARN("[POLL] 连续读不到 ManufacturerData，重新发现设备");
                 if (!check_existing_devices(g_dev_conn))
                 {
@@ -98,6 +137,7 @@ static gboolean poll_manufacturer_data(gpointer user_data)
         {
             fail_cnt = 0;
             g_dev_path[0] = '\0';
+            s_last_len = 0;
             LOG_WARN("[POLL] 设备代理失效，重新发现设备");
             if (!check_existing_devices(g_dev_conn))
             {
@@ -131,9 +171,6 @@ static void process_mfg_data(GVariant *mfg_data)
     guint16      mfg_id;
     GVariant    *value;
 
-    static uint8_t  s_last_frame[32];
-    static uint16_t s_last_len = 0;
-
     g_variant_iter_init(&iter, mfg_data);
 
     while (g_variant_iter_next(&iter, "{qv}", &mfg_id, &value))
@@ -144,28 +181,41 @@ static void process_mfg_data(GVariant *mfg_data)
 
         data = g_variant_get_fixed_array(value, &len, sizeof(guint8));
 
-        if (comm_parse_frame(data, len, &frame))
+        /* 广播数据 = 协议帧 + 末尾 1 字节滚动序号（STM32 附加）。
+         * 序号变化 → 广播还在更新（存活信号，看门狗依据）；
+         * 去重只按帧内容，静止时帧相同仍去重，不刷 MQTT */
+        if (len > 1)
         {
-            if(len == s_last_len && (memcmp(data, s_last_frame, len) == 0))
+            uint8_t seq       = data[len - 1];
+            gsize   frame_len = len - 1;
+
+            if (seq != s_last_seq)
             {
-                g_variant_unref(value);
-                continue;
+                s_last_seq    = seq;
+                g_last_seq_ms = g_get_monotonic_time() / 1000;
+            }
+
+            if (comm_parse_frame(data, frame_len, &frame))
+            {
+                if (frame_len == s_last_len
+                    && memcmp(data, s_last_frame, frame_len) == 0)
+                {
+                    g_variant_unref(value);
+                    continue;
+                }
+                memcpy(s_last_frame, data, frame_len);
+                s_last_len = (uint16_t)frame_len;
+                LOG_INFO("[ADV] mfg_id=0x%04X, len=%zu", mfg_id, len);
+
+                LOG_INFO("[ADV] 解析帧成功 type=%02X", frame.type);
+
+                if (g_mosq)
+                    mqtt_publish_frame(g_mosq, &frame);
             }
             else
             {
-                memcpy(s_last_frame, data, len);
-                s_last_len = len;
-                LOG_INFO("[ADV] mfg_id=0x%04X, len=%zu", mfg_id, len);
+                LOG_INFO("[ADV] 未识别的数据：%zu 字节", len);
             }
-
-            LOG_INFO("[ADV] 解析帧成功 type=%02X", frame.type);
-
-            if (g_mosq)
-                mqtt_publish_frame(g_mosq, &frame);
-        }
-        else
-        {
-            LOG_INFO("[ADV] 未识别的数据：%zu 字节", len);
         }
 
         g_variant_unref(value);
@@ -430,76 +480,6 @@ static void hci_reset_controller(void)
 }
 
 /**
-  * @brief  适配器断电→上电复位，清控制器残留状态
-  * @retval TRUE  复位成功
-  *         FALSE 失败（通常是 BlueZ Busy，需更高级别恢复）
-  */
-static gboolean adapter_power_cycle(GDBusConnection *conn)
-{
-    GDBusProxy *props;
-    GVariant   *params;
-    GVariant   *ret;
-    GError     *error = NULL;
-
-    props = g_dbus_proxy_new_sync(
-                conn, G_DBUS_PROXY_FLAGS_NONE,
-                NULL, "org.bluez",
-                "/org/bluez/hci0",
-                "org.freedesktop.DBus.Properties",
-                NULL, NULL);
-
-    if (!props)
-    {
-        LOG_ERROR("[POLL] 创建 Properties 代理失败，无法复位适配器");
-        return FALSE;
-    }
-
-    /* 1. Powered=false：控制器复位 */
-    params = g_variant_new(
-                "(ssv)", "org.bluez.Adapter1",
-                "Powered", g_variant_new_boolean(FALSE));
-    ret = g_dbus_proxy_call_sync(
-                props, "Set", params,
-                G_DBUS_CALL_FLAGS_NONE, 5000, NULL, &error);
-    if (error)
-    {
-        LOG_ERROR("[POLL] 设置 Powered=FALSE 失败: %s", error->message);
-        g_clear_error(&error);
-        if (ret)
-            g_variant_unref(ret);
-        g_object_unref(props);
-        return FALSE;
-    }
-    if (ret)
-        g_variant_unref(ret);
-    usleep(500000);
-
-    /* 2. Powered=true：重新上电 */
-    params = g_variant_new(
-                "(ssv)", "org.bluez.Adapter1",
-                "Powered", g_variant_new_boolean(TRUE));
-    ret = g_dbus_proxy_call_sync(
-                props, "Set", params,
-                G_DBUS_CALL_FLAGS_NONE, 5000, NULL, &error);
-    if (error)
-    {
-        LOG_ERROR("[POLL] 设置 Powered=TRUE 失败: %s", error->message);
-        g_clear_error(&error);
-        if (ret)
-            g_variant_unref(ret);
-        g_object_unref(props);
-        return FALSE;
-    }
-    if (ret)
-        g_variant_unref(ret);
-    usleep(500000);
-
-    g_object_unref(props);
-    LOG_WARN("[POLL] 适配器已复位（Powered off/on）");
-    return TRUE;
-}
-
-/**
   * @brief  执行一轮 discovery 启动：Stop → Filter → Start
   * @retval TRUE  启动成功
   *         FALSE 失败（含 InProgress：控制器残留扫描状态）
@@ -548,9 +528,10 @@ static gboolean start_discovery_once(GDBusProxy *adapter)
 }
 
 /**
-  * @brief  启动/重启 BLE discovery，失败自动升级：复位适配器再试一轮
+  * @brief  启动/重启 BLE discovery，失败自动升级
   * @note   控制器扫描状态卡死（InProgress）时 Stop/Start 救不回来，
-  *         必须 Powered off/on 复位适配器，等价于手动 hcitool lescan
+  *         用原始 HCI 复位控制器（hcitool HCI_Reset），
+  *         仍失败则重启 bluetoothd 兜底
   */
 static void restart_discovery(GDBusConnection *conn)
 {
@@ -589,32 +570,9 @@ static void restart_discovery(GDBusConnection *conn)
         g_variant_unref(result);
     usleep(200000);
 
-    /* 第 2 级：D-Bus 适配器复位（Powered off/on） */
-    LOG_WARN("[POLL] 首次启动失败，复位适配器后重试");
-    if (adapter_power_cycle(conn))
-    {
-        /* 复位后旧代理可能失效，重建 */
-        g_object_unref(adapter);
-        adapter = g_dbus_proxy_new_sync(
-                    conn, G_DBUS_PROXY_FLAGS_NONE,
-                    NULL, "org.bluez",
-                    "/org/bluez/hci0",
-                    "org.bluez.Adapter1",
-                    NULL, NULL);
-        if (!adapter)
-        {
-            LOG_ERROR("[POLL] 复位后重建适配器代理失败");
-            return;
-        }
-        if (start_discovery_once(adapter))
-        {
-            g_object_unref(adapter);
-            return;
-        }
-        LOG_WARN("[POLL] D-Bus 复位后仍失败，尝试 HCI 直接复位");
-    }
-
-    /* 第 3 级：直接操作 HCI 复位控制器（绕过 BlueZ，等价手动 hcitool） */
+    /* 第 2 级：原始 HCI 复位控制器（绕过 BlueZ，等价手动 hcitool，
+     * 实测有效；D-Bus 的 Powered off/on 在控制器卡死时永远 Busy 无效） */
+    LOG_WARN("[POLL] 首次启动失败，HCI 直接复位控制器");
     hci_reset_controller();
 
     g_object_unref(adapter);
@@ -634,7 +592,7 @@ static void restart_discovery(GDBusConnection *conn)
     {
         LOG_ERROR("[POLL] HCI 复位后仍失败，重启 bluetoothd");
 
-        /* 第 4 级：重启 bluetoothd，清软件层残留状态 */
+        /* 第 3 级：重启 bluetoothd，清软件层残留状态 */
         if (system("timeout 10 systemctl restart bluetooth") == 0)
         {
             sleep(5);   /* 等 bluetoothd 完全启动 + 控制器初始化 */
