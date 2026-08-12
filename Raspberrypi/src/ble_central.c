@@ -549,6 +549,7 @@ static void restart_discovery(GDBusConnection *conn)
     {
         LOG_ERROR("创建适配器代理失败: %s", error->message);
         g_error_free(error);
+        check_existing_devices(conn);   /* 至少尝试从缓存恢复 g_dev_path */
         return;
     }
     LOG_INFO("BLE 适配器就绪");
@@ -556,6 +557,8 @@ static void restart_discovery(GDBusConnection *conn)
     /* 第 1 轮：Filter + Start（不 Stop，首次启动无需清残留） */
     if (start_discovery_once(adapter))
     {
+        /* 扫描已启动，但看门狗可能刚清空 g_dev_path，同步重找设备恢复轮询 */
+        check_existing_devices(conn);
         g_object_unref(adapter);
         return;
     }
@@ -596,6 +599,7 @@ static void restart_discovery(GDBusConnection *conn)
     if (!adapter)
     {
         LOG_ERROR("[POLL] HCI 复位后重建适配器代理失败");
+        check_existing_devices(conn);   /* 至少尝试从缓存恢复 g_dev_path */
         return;
     }
 
@@ -619,6 +623,7 @@ static void restart_discovery(GDBusConnection *conn)
         if (!adapter)
         {
             LOG_ERROR("[POLL] bluetoothd 重启后重建适配器代理失败");
+            check_existing_devices(conn);   /* 至少尝试从缓存恢复 g_dev_path */
             return;
         }
 
@@ -650,6 +655,12 @@ deep_reset_cooldown:
         if (result)
             g_variant_unref(result);
     }
+
+    /* 关键修复：无论恢复链走到哪一步（含冷却路径、HCI/bluetoothd 失败），
+     * 最后都同步重找一次设备，恢复 g_dev_path 和轮询。
+     * 之前依赖 InterfacesAdded 信号，但冷却/控制器僵死时该信号不来，
+     * g_dev_path 空着 → poll 每次 return → 看门狗失效、静默死机 */
+    check_existing_devices(conn);
 
     g_object_unref(adapter);
 }
