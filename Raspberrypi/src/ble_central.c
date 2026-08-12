@@ -35,6 +35,10 @@ static uint16_t  s_last_len   = 0;
 static uint8_t   s_last_seq   = 0xFF;  /* 上一广播序号（初值确保首帧触发） */
 static gint64    g_last_seq_ms = 0;    /* 最近序号更新时刻（monotonic ms） */
 
+/* ---- 深度复位冷却：HCI/bluetoothd 重启用，防频繁锤控制器崩溃 ---- */
+#define DEEP_RESET_COOLDOWN_MS  300000   /* 5 分钟一次 */
+static gint64    s_last_deep_reset_ms = 0;
+
 /* ble_write.c 定义的标志：下行 GATT 期间暂停扫描，poll 需配合跳过自愈 */
 extern volatile int g_scan_suspended;
 
@@ -95,11 +99,11 @@ static gboolean poll_manufacturer_data(gpointer user_data)
                     fail_cnt = 0;
                     g_dev_path[0] = '\0';
                     s_last_len = 0;   /* 清去重，防恢复后首帧被吞 */
-                    LOG_WARN("[POLL] 数据 %dms 无更新，重新发现设备", FRESH_WATCHDOG_MS);
-                    if (!check_existing_devices(g_dev_conn))
-                    {
-                        restart_discovery(g_dev_conn);
-                    }
+                    LOG_WARN("[POLL] 数据 %dms 无更新，重启扫描", FRESH_WATCHDOG_MS);
+                    /* 数据陈旧说明控制器不投递新广播了，缓存里的设备对象也是
+                     * 陈旧的 —— check_existing_devices 只重看缓存救不回来。
+                     * 必须真正重启扫描（内部含 Stop/Start → HCI → bluetoothd 升级） */
+                    restart_discovery(g_dev_conn);
                 }
             }
             else
@@ -570,6 +574,18 @@ static void restart_discovery(GDBusConnection *conn)
         g_variant_unref(result);
     usleep(200000);
 
+    /* 深度复位（HCI / bluetoothd）受冷却保护：5 分钟一次，
+     * 防止看门狗反复触发时把控制器/系统搞崩 */
+    if (g_get_monotonic_time() / 1000 - s_last_deep_reset_ms < DEEP_RESET_COOLDOWN_MS)
+    {
+        gint64 remain = (DEEP_RESET_COOLDOWN_MS
+                         - (g_get_monotonic_time() / 1000 - s_last_deep_reset_ms)) / 1000;
+        LOG_WARN("[POLL] 深度复位冷却中（%llds 后可用），仅重试 Stop+Start",
+                 (long long)remain);
+        goto deep_reset_cooldown;
+    }
+    s_last_deep_reset_ms = g_get_monotonic_time() / 1000;
+
     /* 第 2 级：原始 HCI 复位控制器（绕过 BlueZ，等价手动 hcitool，
      * 实测有效；D-Bus 的 Powered off/on 在控制器卡死时永远 Busy 无效） */
     LOG_WARN("[POLL] 首次启动失败，HCI 直接复位控制器");
@@ -614,6 +630,8 @@ static void restart_discovery(GDBusConnection *conn)
         if (!start_discovery_once(adapter))
             LOG_ERROR("[POLL] 重启 bluetoothd 后仍无法启动 discovery");
     }
+
+deep_reset_cooldown:
 
     /* 最终兜底：所有恢复均未成功开启新扫描，但如果 BlueZ 已有扫描在跑就直接复用 */
     {
