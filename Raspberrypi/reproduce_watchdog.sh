@@ -24,19 +24,20 @@ sudo pkill -9 isk_gateway 2>/dev/null
 rm -f "$LOG"      # 清空日志，保证判断准确
 sleep 2
 
-echo "=== [2/5] 启动网关（后台），等待数据（最多 20s） ==="
+echo "=== [2/5] 启动网关（后台），等待数据（最多 60s） ==="
 sudo ./isk_gateway > /dev/null 2>&1 &
-sleep 3
-for _ in $(seq 1 17); do
-    if grep -q "MQTT 已发布" "$LOG"; then break; fi
+for i in $(seq 1 60); do
+    if grep -q "MQTT 已发布" "$LOG"; then
+        echo "OK：第 ${i}s 开始有数据（已发布 $(grep -c 'MQTT 已发布' "$LOG") 条）"
+        break
+    fi
     sleep 1
 done
 if ! grep -q "MQTT 已发布" "$LOG"; then
-    echo "!! 20s 内无数据，网关日志（诊断用）："
+    echo "!! 60s 内无数据，网关日志（诊断用）："
     tail -20 "$LOG"
     exit 1
 fi
-echo "OK：数据在流（已发布 $(grep -c 'MQTT 已发布' "$LOG") 条）"
 
 echo ""
 echo "=== [3/5] 现在【拔掉 ESP32/STM32 电源】让广播停止 ==="
