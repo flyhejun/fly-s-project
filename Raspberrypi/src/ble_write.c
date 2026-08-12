@@ -101,12 +101,13 @@ static void ble_gatt_write(const uint8_t *frame, size_t len)
     }
 
     /* ---- 3. 轮询等待 GATT 服务发现完成 ---- */
-    for (i = 0; i < 30; i++) 
+    usleep(500000);   /* 先等 500ms，ESP32 AT 固件服务发现启动慢 */
+    for (i = 0; i < 100; i++)
     {
         GVariant *v = g_dbus_proxy_get_cached_property(
             device_proxy, "ServicesResolved");
 
-        if (v) 
+        if (v)
         {
             gboolean resolved = g_variant_get_boolean(v);
             g_variant_unref(v);
@@ -116,12 +117,12 @@ static void ble_gatt_write(const uint8_t *frame, size_t len)
         usleep(100000);   /* 100ms */
     }
 
-    if (i >= 30) 
+    if (i >= 100)
     {
-        LOG_ERROR("[GATT] ServicesResolved 超时 (3s)");
+        LOG_ERROR("[GATT] ServicesResolved 超时 (10.5s)");
         goto disconnect;
     }
-    LOG_INFO("[GATT] 服务发现完成 (%d ms)", (i + 1) * 100);
+    LOG_INFO("[GATT] 服务发现完成 (%d ms)", 500 + (i + 1) * 100);
 
     /* ---- 4. 遍历 GATT 对象树，找 UUID 匹配的特征值 ---- */
     om_proxy = g_dbus_proxy_new_sync(
