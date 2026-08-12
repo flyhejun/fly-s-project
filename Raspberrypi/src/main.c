@@ -19,6 +19,9 @@
 #include <string.h>
 #include <strings.h>
 #include <time.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <errno.h>
 
 #include "log.h"
 #include "comm_parse.h"
@@ -266,6 +269,43 @@ int main(void)
     /* 初始化日志 */
     log_init("./isk_gateway.log");
     LOG_INFO("ISKBoard 网关启动");
+
+    /* ---- PID 文件锁：防重复启动 ---- */
+    {
+        #define PID_FILE "/tmp/isk_gateway.pid"
+        int  fd;
+        char buf[16];
+        int  pid_old = 0;
+
+        fd = open(PID_FILE, O_RDWR | O_CREAT, 0644);
+        if (fd < 0)
+        {
+            LOG_ERROR("无法创建 PID 文件 %s", PID_FILE);
+            return 1;
+        }
+
+        /* 尝试加写锁（非阻塞），已锁 = 有另一个实例在跑 */
+        struct flock fl = { F_WRLCK, SEEK_SET, 0, 0, 0 };
+        if (fcntl(fd, F_SETLK, &fl) == -1)
+        {
+            /* 读旧 PID 打日志 */
+            if (read(fd, buf, sizeof(buf) - 1) > 0)
+            {
+                buf[sizeof(buf) - 1] = '\0';
+                pid_old = atoi(buf);
+            }
+            LOG_ERROR("已有实例在运行 (PID=%d)，拒绝启动", pid_old);
+            close(fd);
+            return 1;
+        }
+
+        /* 截断并写入当前 PID */
+        ftruncate(fd, 0);
+        lseek(fd, 0, SEEK_SET);
+        snprintf(buf, sizeof(buf), "%d\n", getpid());
+        write(fd, buf, strlen(buf));
+        /* fd 保持打开，进程退出时内核自动释放锁 */
+    }
 
     /* 加载配置（文件不存在则用默认值） */
     Config_Load("./isk_gateway.conf");
