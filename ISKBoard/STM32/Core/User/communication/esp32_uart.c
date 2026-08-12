@@ -632,38 +632,20 @@ void ESP32_RX_Poll(void)
   * 注意：必须放任务里，不能放中断——HAL_UART_Transmit 是阻塞的。
   */
 /**
-  * @brief  广播保活：URC 触发 + 主动定时重启（兜底）
+  * @brief  断开后恢复广播（仅限 +BLEDISCONN URC 触发）
   *
-  * 部分 ESP-AT 固件不发 +BLEDISCONN URC，导致断开后广播永不恢复。
-  * 这里双保险：URC 标志触发立即重启，另外每 15 秒主动发一次
-  * AT+BLEADVSTART 确保广播在可连接状态。
-  *
-  * 注意：只发 AT+BLEADVSTART（fire-and-forget，不 Stop 不等响应），
-  * 避免 UART 阻塞和 ADV 数据被清空。广播已在运行则 ESP32 静默拒绝。
+  * ESP32 AT 固件在断开后会自动恢复广播，一般不需要手动重启。
+  * 此函数仅处理 URC 明确到达的情况，不做主动定时重启
+  * （主动重启会清空 ADV 数据，反而导致 Pi 端收不到帧）。
   */
 void ESP32_CheckAdvStatus(void)
 {
-    static uint32_t s_last_restart = 0;
-    uint32_t now = HAL_GetTick();
-    int need_restart = 0;
-
-    /* 路径 1：+BLEDISCONN URC 到达（部分固件有效） */
     if (g_ble_adv_status)
     {
         g_ble_adv_status = 0;
-        need_restart = 1;
-    }
 
-    /* 路径 2：主动定时（每 15s），兜底固件不报 URC */
-    if (now - s_last_restart > 15000)
-        need_restart = 1;
-
-    if (need_restart)
-    {
-        /* fire-and-forget：不等响应，不 Stop，
-         * 广播已运行则 ESP32 忽略此命令，不会清空 ADV 数据 */
+        /* fire-and-forget：不等响应，广播已运行时 ESP32 静默忽略 */
         uart2_send((const uint8_t *)"AT+BLEADVSTART\r\n", 17);
-        s_last_restart = now;   /* 无论成败都更新时间，防止重试风暴 */
     }
 }
 
