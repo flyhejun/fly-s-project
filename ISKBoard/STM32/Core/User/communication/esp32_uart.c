@@ -616,11 +616,17 @@ void ESP32_CheckAdvStatus(void)
 {
     if (g_ble_adv_status)
     {
+        int ret;
         g_ble_adv_status = 0;
 
-        /* 同步等待 OK/ERROR：响应被本函数消费，不会进 RX 解析器，
-           避免「恢复广播的 ERROR」被误记为 ADVDA 失败 */
-        send_at_cmd("AT+BLEADVSTART", 500);
+        /* 先停后启：部分 AT 固件断开后会残留广播状态，
+         * 直接 AT+BLEADVSTART 可能冲突报 ERROR 或停掉广播 */
+        send_at_cmd("AT+BLEADVSTOP", 500);
+        HAL_Delay(200);   /* 等广播停止状态稳定 */
+
+        ret = send_at_cmd("AT+BLEADVSTART", 1000);
+        if (ret != 1)
+            printf("[COMM] BLE 广播重启失败 (ret=%d)\n", ret);
     }
 }
 
