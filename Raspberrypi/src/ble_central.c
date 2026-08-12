@@ -538,13 +538,6 @@ static gboolean start_discovery_once(GDBusProxy *adapter)
 
     if (error)
     {
-        /* InProgress = BlueZ 已有扫描在进行（内建 scanner / 其他客户端），直接复用 */
-        if (strstr(error->message, "InProgress"))
-        {
-            LOG_INFO("StartDiscovery: BlueZ 已有扫描，直接复用");
-            g_error_free(error);
-            return TRUE;
-        }
         LOG_ERROR("StartDiscovery 失败: %s", error->message);
         g_error_free(error);
         return FALSE;
@@ -666,6 +659,29 @@ static void restart_discovery(GDBusConnection *conn)
         {
             LOG_ERROR("[POLL] 重启 bluetoothd 失败，放弃");
         }
+    }
+
+    /* 最终兜底：所有恢复均未成功开启新扫描，但如果 BlueZ 已有扫描在跑就直接复用 */
+    {
+        GError *fallback_err = NULL;
+        result = g_dbus_proxy_call_sync(
+                    adapter, "StartDiscovery",
+                    NULL, G_DBUS_CALL_FLAGS_NONE,
+                    5000, NULL, &fallback_err);
+        if (fallback_err)
+        {
+            if (strstr(fallback_err->message, "InProgress"))
+                LOG_INFO("[POLL] 恢复未生效，但 BlueZ 已有扫描，直接复用");
+            else
+                LOG_ERROR("[POLL] 所有恢复手段均失败: %s", fallback_err->message);
+            g_error_free(fallback_err);
+        }
+        else
+        {
+            LOG_INFO("BLE discovery 已启动（兜底）");
+        }
+        if (result)
+            g_variant_unref(result);
     }
 
     g_object_unref(adapter);
