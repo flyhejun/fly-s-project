@@ -19,14 +19,20 @@ RECOVER_S=25   # 恢复观察时长
 cleanup() { sudo pkill -9 isk_gateway 2>/dev/null; }
 trap cleanup EXIT
 
-echo "=== [1/5] 清环境 ==="
+echo "=== [1/5] 清环境 + 恢复控制器基线 ==="
 sudo pkill -9 isk_gateway 2>/dev/null
+# 一次性基线：Pi3 控制器每次开机常是卡死的（NotReady/Network down），
+# 先把控制器恢复到健康态，让网关在干净基线上启动，隔离出看门狗逻辑。
+# （这只是测试前置，不是被测的恢复机制。）
+sudo hciconfig hci0 down 2>/dev/null
+sudo hciconfig hci0 up 2>/dev/null
+sudo systemctl restart bluetooth
+sleep 3
 rm -f "$LOG"      # 清空日志，保证判断准确
-sleep 2
 
-echo "=== [2/5] 启动网关（后台），等待数据（最多 60s） ==="
+echo "=== [2/5] 启动网关（后台），等待数据（最多 40s） ==="
 sudo ./isk_gateway > /dev/null 2>&1 &
-for i in $(seq 1 60); do
+for i in $(seq 1 40); do
     if grep -q "MQTT 已发布" "$LOG"; then
         echo "OK：第 ${i}s 开始有数据（已发布 $(grep -c 'MQTT 已发布' "$LOG") 条）"
         break
@@ -34,7 +40,7 @@ for i in $(seq 1 60); do
     sleep 1
 done
 if ! grep -q "MQTT 已发布" "$LOG"; then
-    echo "!! 60s 内无数据，网关日志（诊断用）："
+    echo "!! 40s 内无数据，网关日志（诊断用）："
     tail -20 "$LOG"
     exit 1
 fi
