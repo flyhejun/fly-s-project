@@ -221,7 +221,14 @@ static void process_mfg_data(GVariant *mfg_data)
             }
             else
             {
-                LOG_INFO("[ADV] 未识别的数据：%zu 字节", len);
+                /* 诊断：打出原始字节，区分瞬时垃圾 vs 有规律的坏帧 */
+                char hex[128];
+                int  h = 0;
+                gsize k;
+                for (k = 0; k < len && k < 32; k++)
+                    h += snprintf(&hex[h], sizeof(hex) - (size_t)h, "%02X ", data[k]);
+                LOG_INFO("[ADV] 未识别的数据：%zu 字节 (mfg=0x%04X): %s",
+                         len, mfg_id, hex);
             }
         }
 
