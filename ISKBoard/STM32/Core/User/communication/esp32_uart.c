@@ -413,7 +413,9 @@ void ESP32_RX_Char(uint8_t ch)
                     if (!is_binary)
                     {
 
-                /* 诊断：ESP32 的一切非 URC 响应（OK/ERROR/其他） */
+                /* 只关注 ERROR（打日志 + 置错误标志）和 OK（静默）；
+                 * 其余非 URC 行（含 ESP32 周期噪声 "AAAA..."）一律静默丢弃，
+                 * 不再打印，避免刷屏影响监视观感 */
                 if (strstr(rx_line, "ERROR"))
                 {
                     printf("[ESP32 RX] ERROR: %s\n", rx_line);
@@ -421,11 +423,6 @@ void ESP32_RX_Char(uint8_t ch)
                 }
                 else if (strstr(rx_line, "OK"))
                     ;   /* OK 静默，避免刷屏 */
-                else if (strstr(rx_line, "AT") == NULL
-                      && strstr(rx_line, "+WRITE") == NULL
-                      && strstr(rx_line, "+BLEDISCONN") == NULL
-                      && rx_line[0] != '\0')
-                    printf("[ESP32 RX] %s\n", rx_line);
 
                 parse_ble_status(rx_line);
                 parse_write_urc(rx_line);   /* +WRITE URC → 下行指令帧 */
