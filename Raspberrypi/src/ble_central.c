@@ -37,7 +37,7 @@ static gboolean  s_resume_pending = FALSE;   /* 断线恢复：下个新广播�
 static gint64    g_last_seq_ms = 0;    /* 最近序号更新时刻（monotonic ms） */
 
 /* ---- 深度复位冷却：HCI/bluetoothd 重启用，防频繁锤控制器崩溃 ---- */
-#define DEEP_RESET_COOLDOWN_MS  300000   /* 5 分钟一次 */
+#define DEEP_RESET_COOLDOWN_MS  60000    /* 60 秒一次 */
 static gint64    s_last_deep_reset_ms = 0;
 
 /* ble_write.c 定义的标志：下行 GATT 期间暂停扫描，poll 需配合跳过自愈 */
@@ -129,7 +129,7 @@ static gboolean poll_manufacturer_data(gpointer user_data)
             LOG_WARN("[POLL] 数据 %dms 无更新，重启扫描", FRESH_WATCHDOG_MS);
             /* 空/陈旧缓存都说明控制器不投递新广播了，缓存里的设备对象
              * 同样是陈旧的 —— 必须真正重启扫描（内部 Stop/Start →
-             * HCI → bluetoothd 升级，深度复位有 5 分钟冷却） */
+             * HCI → bluetoothd 升级，深度复位有 60 秒冷却） */
             restart_discovery(g_dev_conn);
         }
     }
@@ -580,7 +580,7 @@ static void restart_discovery(GDBusConnection *conn)
         g_variant_unref(result);
     usleep(200000);
 
-    /* 深度复位（HCI / bluetoothd）受冷却保护：5 分钟一次，
+    /* 深度复位（HCI / bluetoothd）受冷却保护：60 秒一次，
      * 防止看门狗反复触发时把控制器/系统搞崩 */
     if (g_get_monotonic_time() / 1000 - s_last_deep_reset_ms < DEEP_RESET_COOLDOWN_MS)
     {
