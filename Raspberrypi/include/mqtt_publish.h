@@ -10,10 +10,12 @@
 #include <mosquitto.h>
 #include "comm_parse.h"
 
-/* MQTT Topic 定义 */
-#define TOPIC_DATA   "fall_detection/pi01/data"
-#define TOPIC_ALERT  "fall_detection/pi01/alert"
-#define TOPIC_STATUS "fall_detection/pi01/status"
+/* MQTT Topic 定义
+ * ThingsBoard 遥测 topic：三类帧统一发到这一个 topic，靠 JSON 里的 type 字段区分。
+ * 原 topic（fall_detection/pi01/data|alert|status）已随迁移废弃。 */
+#define TOPIC_DATA   "v1/devices/me/telemetry"
+#define TOPIC_ALERT  "v1/devices/me/telemetry"
+#define TOPIC_STATUS "v1/devices/me/telemetry"
 
 /**
   * @brief  将解析后的帧转 JSON 并发布到对应的 MQTT topic

@@ -31,8 +31,8 @@
 #define MQTT_PORT       1883
 #define DEVICE_ID       "pi01"
 
-#define TOPIC_CMD       "fall_detection/" DEVICE_ID "/cmd"
-#define TOPIC_STATUS    "fall_detection/" DEVICE_ID "/status"
+#define TOPIC_CMD       "v1/devices/me/rpc/request/+"  /* ThingsBoard RPC 请求 topic（下行） */
+#define TOPIC_STATUS    "v1/devices/me/telemetry"       /* 上行状态走遥测 */
 
 /* 全局 MQTT 实例（ble_central.c 回调中使用） */
 struct mosquitto *g_mosq = NULL;
@@ -50,8 +50,9 @@ static void on_connect(struct mosquitto *mosq, void *userdata, int rc)
     {
         LOG_INFO("MQTT 连接成功");
         mosquitto_subscribe(mosq, NULL, TOPIC_CMD, 1);
-        mosquitto_publish(mosq, NULL, TOPIC_STATUS, strlen("online"),
-                          "online", 0, false);
+        mosquitto_publish(mosq, NULL, TOPIC_STATUS,
+                          strlen("{\"type\":\"status\",\"state\":\"online\"}"),
+                          "{\"type\":\"status\",\"state\":\"online\"}", 0, false);
     }
     else
     {
