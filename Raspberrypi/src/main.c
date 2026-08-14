@@ -62,47 +62,64 @@ static void on_connect(struct mosquitto *mosq, void *userdata, int rc)
 static void on_message(struct mosquitto *mosq, void *userdata,
                        const struct mosquitto_message *msg)
 {
-    cJSON   *root;
-    cJSON   *cmd;
-    cJSON   *param;
-    cJSON   *value;
-    uint8_t type;
-    int     plen;
+    cJSON       *root;
+    cJSON       *method;
+    cJSON       *params;
+    cJSON       *param;
+    cJSON       *value;
+    const char  *request_id;
+    uint8_t      type;
+    int          plen;
 
     uint8_t payload[16];
     uint8_t buf[32];
+    char    resp_topic[96];
 
     LOG_INFO("MQTT 收到 topic=%s", msg->topic);
 
+    /* 1. 从 topic 提取请求号：最后一个 '/' 之后就是 RPC 请求 id */
+    request_id = strrchr(msg->topic, '/');
+    if (request_id == NULL)
+    {
+        LOG_WARN("RPC topic 格式异常: %s", msg->topic);
+        return;
+    }
+    request_id++;
+
+    /* 2. 解析 JSON：{"method":"...","params":{...}} */
     root = cJSON_ParseWithLength((const char *)msg->payload, msg->payloadlen);
     if (root == NULL)
     {
-        LOG_WARN("MQTT 指令 JSON 解析失败");
+        LOG_WARN("RPC JSON 解析失败");
         return;
     }
 
-    cmd = cJSON_GetObjectItem(root, "cmd");
-    if (cJSON_IsString(cmd))
+    method = cJSON_GetObjectItem(root, "method");
+    params = cJSON_GetObjectItem(root, "params");
+    if (cJSON_IsString(method))
     {
-        LOG_INFO("收到指令: %s", cmd->valuestring);
+        LOG_INFO("收到 RPC: method=%s", method->valuestring);
 
-        if (strcasecmp(cmd->valuestring, "set_threshold") == 0)
+        /* 3. 方法名 → 帧 TYPE 分发 */
+        if (strcasecmp(method->valuestring, "setThreshold") == 0)
         {
             type = 0x81;
-            
-            param = cJSON_GetObjectItem(root, "param_id");
+
+            /* paramId（1~4）→ payload[0] */
+            param = cJSON_GetObjectItem(params, "paramId");
             if (!cJSON_IsNumber(param))
             {
-                LOG_WARN("set_threshold 缺少 param_id");
+                LOG_WARN("setThreshold 缺少 paramId");
                 cJSON_Delete(root);
                 return;
             }
             payload[0] = (uint8_t)param->valueint;
 
-            value = cJSON_GetObjectItem(root, "value");
+            /* value → payload[1..4] 小端 4 字节 */
+            value = cJSON_GetObjectItem(params, "value");
             if (!cJSON_IsNumber(value))
             {
-                LOG_WARN("set_threshold 缺少 value");
+                LOG_WARN("setThreshold 缺少 value");
                 cJSON_Delete(root);
                 return;
             }
@@ -110,46 +127,43 @@ static void on_message(struct mosquitto *mosq, void *userdata,
             payload[2] = (uint8_t)((value->valueint >> 8) & 0xFF);
             payload[3] = (uint8_t)((value->valueint >> 16) & 0xFF);
             payload[4] = (uint8_t)((value->valueint >> 24) & 0xFF);
-            
+
             plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 5);
             if (plen <= 0)
             {
-                LOG_ERROR("set_threshold 帧打包失败");
+                LOG_ERROR("设置阈值帧打包失败");
                 cJSON_Delete(root);
                 return;
             }
-            if(ble_write_enqueue(buf, plen) != 0)
+            if (ble_write_enqueue(buf, plen) != 0)
             {
                 LOG_WARN("BLE 写入队列已满，丢弃指令");
             }
         }
-        else if(strcasecmp(cmd->valuestring, "alarm_cancel") == 0)
+        else if (strcasecmp(method->valuestring, "alarmCancel") == 0)
         {
             type = 0x83;
 
-            memset(payload, 0, sizeof(payload));
-            memset(buf, 0, sizeof(buf));
             plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 0);
             if (plen <= 0)
             {
-                LOG_ERROR("alarm_cancel 帧打包失败");
+                LOG_ERROR("alarmCancel 帧打包失败");
                 cJSON_Delete(root);
                 return;
             }
-            if(ble_write_enqueue(buf,plen) != 0)
+            if (ble_write_enqueue(buf, plen) != 0)
             {
                 LOG_WARN("BLE 写入队列已满，丢弃指令");
             }
-
         }
-        else if(strcasecmp(cmd->valuestring, "test_led") == 0)
+        else if (strcasecmp(method->valuestring, "testLed") == 0)
         {
             type = 0x84;
 
-            value = cJSON_GetObjectItem(root, "value");
+            value = cJSON_GetObjectItem(params, "value");
             if (!cJSON_IsNumber(value))
             {
-                LOG_WARN("test_led 缺少 value");
+                LOG_WARN("testLed 缺少 value");
                 cJSON_Delete(root);
                 return;
             }
@@ -158,23 +172,23 @@ static void on_message(struct mosquitto *mosq, void *userdata,
             plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 1);
             if (plen <= 0)
             {
-                LOG_ERROR("test_led 帧打包失败");
+                LOG_ERROR("testLed 帧打包失败");
                 cJSON_Delete(root);
                 return;
             }
-            if(ble_write_enqueue(buf,plen) != 0)
+            if (ble_write_enqueue(buf, plen) != 0)
             {
                 LOG_WARN("BLE 写入队列已满，丢弃指令");
             }
         }
-        else if(strcasecmp(cmd->valuestring, "test_buzzer") == 0)
+        else if (strcasecmp(method->valuestring, "testBuzzer") == 0)
         {
             type = 0x85;
 
-            value = cJSON_GetObjectItem(root, "value");
+            value = cJSON_GetObjectItem(params, "value");
             if (!cJSON_IsNumber(value))
             {
-                LOG_WARN("test_buzzer 缺少 value");
+                LOG_WARN("testBuzzer 缺少 value");
                 cJSON_Delete(root);
                 return;
             }
@@ -183,43 +197,43 @@ static void on_message(struct mosquitto *mosq, void *userdata,
             plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 1);
             if (plen <= 0)
             {
-                LOG_ERROR("test_buzzer 帧打包失败");
+                LOG_ERROR("testBuzzer 帧打包失败");
                 cJSON_Delete(root);
                 return;
             }
-            if(ble_write_enqueue(buf,plen) != 0)
+            if (ble_write_enqueue(buf, plen) != 0)
             {
                 LOG_WARN("BLE 写入队列已满，丢弃指令");
             }
-
         }
-        else if(strcasecmp(cmd->valuestring, "query_status") == 0)
+        else if (strcasecmp(method->valuestring, "queryStatus") == 0)
         {
             type = 0x87;
 
-            memset(payload, 0, sizeof(payload));
-            memset(buf, 0, sizeof(buf));
             plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 0);
             if (plen <= 0)
             {
-                LOG_ERROR("query_status 帧打包失败");
+                LOG_ERROR("queryStatus 帧打包失败");
                 cJSON_Delete(root);
                 return;
             }
-            if(ble_write_enqueue(buf,plen) != 0)
+            if (ble_write_enqueue(buf, plen) != 0)
             {
                 LOG_WARN("BLE 写入队列已满，丢弃指令");
             }
         }
         else
         {
-            LOG_WARN("未知指令: %s", cmd->valuestring);
+            LOG_WARN("未知 RPC 方法: %s", method->valuestring);
             cJSON_Delete(root);
             return;
         }
+
+        /* 4. 回包 success：ThingsBoard 收到才认为 RPC 完成，否则一直 pending */
+        snprintf(resp_topic, sizeof(resp_topic), "v1/devices/me/rpc/response/%s", request_id);
+        mosquitto_publish(mosq, NULL, resp_topic,
+                          strlen("{\"success\":true}"), "{\"success\":true}", 0, false);
     }
-
-
 
     cJSON_Delete(root);
 }
