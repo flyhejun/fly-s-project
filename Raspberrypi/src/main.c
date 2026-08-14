@@ -247,7 +247,7 @@ static struct mosquitto *mqtt_init(void)
     mosquitto_message_callback_set(mosq, on_message);
 
     /* 带重试的连接：mosquitto_loop_start 会持续尝试（底层自带重连） */
-    int rc = mosquitto_connect(mosq, g_cfg.host, MQTT_PORT, 60);
+    int rc = mosquitto_connect(mosq, g_cfg.host, g_cfg.port, 60);
     if (rc != MOSQ_ERR_SUCCESS)
     {
         LOG_WARN("MQTT 首次连接失败: %s，后台线程将继续重试", mosquitto_strerror(rc));
