@@ -4,7 +4,8 @@
 # 注意：等号两侧不要加空格（解析器按 "key=value" 精确前缀匹配）
 
 host=121.40.252.238
-port=1883
-username=<你的 MQTT 账号>
-password=<你的 MQTT 密码>
+port=1884
+# 网关直连 ThingsBoard：username/password 填设备访问令牌（Device Access Token）
+username=<ThingsBoard 设备访问令牌>
+password=<ThingsBoard 设备访问令牌>
 target_mac=58:8c:81:0e:4e:16

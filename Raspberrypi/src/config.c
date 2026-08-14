@@ -13,10 +13,12 @@
 #include "config.h"
 #include "log.h"
 
-/* 全局配置实例：默认值 = 旧硬编码值，文件缺失时行为不回归 */
+/* 全局配置实例：默认值，文件缺失时回退。
+ * port 默认值随架构迁移改为 ThingsBoard(1884)；
+ * 真实令牌只放 gitignored 的 isk_gateway.conf，不进代码库（避免泄密） */
 GatewayConfig_t g_cfg = {
     .host       = "121.40.252.238",
-    .port       = 1883,
+    .port       = 1884,
     .username   = "flyzzz",
     .password   = "chanhjf17",
     .target_mac = "58:8c:81:0e:4e:16",

@@ -28,7 +28,6 @@
 #include "ble_write.h"
 #include "config.h"
 
-#define MQTT_PORT       1883
 #define DEVICE_ID       "pi01"
 
 #define TOPIC_CMD       "v1/devices/me/rpc/request/+"  /* ThingsBoard RPC 请求 topic（下行） */
