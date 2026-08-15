@@ -140,22 +140,6 @@ static void on_message(struct mosquitto *mosq, void *userdata,
                 LOG_WARN("BLE 写入队列已满，丢弃指令");
             }
         }
-        else if (strcasecmp(method->valuestring, "alarmCancel") == 0)
-        {
-            type = 0x83;
-
-            plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 0);
-            if (plen <= 0)
-            {
-                LOG_ERROR("alarmCancel 帧打包失败");
-                cJSON_Delete(root);
-                return;
-            }
-            if (ble_write_enqueue(buf, plen) != 0)
-            {
-                LOG_WARN("BLE 写入队列已满，丢弃指令");
-            }
-        }
         else if (strcasecmp(method->valuestring, "testLed") == 0)
         {
             type = 0x84;
@@ -198,22 +182,6 @@ static void on_message(struct mosquitto *mosq, void *userdata,
             if (plen <= 0)
             {
                 LOG_ERROR("testBuzzer 帧打包失败");
-                cJSON_Delete(root);
-                return;
-            }
-            if (ble_write_enqueue(buf, plen) != 0)
-            {
-                LOG_WARN("BLE 写入队列已满，丢弃指令");
-            }
-        }
-        else if (strcasecmp(method->valuestring, "queryStatus") == 0)
-        {
-            type = 0x87;
-
-            plen = comm_pack_cmd(buf, sizeof(buf), type, payload, 0);
-            if (plen <= 0)
-            {
-                LOG_ERROR("queryStatus 帧打包失败");
                 cJSON_Delete(root);
                 return;
             }

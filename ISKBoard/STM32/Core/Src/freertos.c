@@ -238,36 +238,45 @@ static void alarm_routine(uint32_t tick_start)
 * @retval None
 */
 /* USER CODE END Header_sensorTask */
+
+/* 判死辅助：6 轴全 0 = 传感器异常(SLEEP/断电)。TODO(用户)补实现 */
+static uint8_t sensor_all_zero(const MPU_Raw_t *d)
+{
+    return(d->ax_raw == 0 && d->ay_raw == 0 && d->az_raw == 0 &&
+           d->gx_raw == 0 && d->gy_raw == 0 && d->gz_raw);
+}
+
 void sensorTask(void *argument)
 {
   /* USER CODE BEGIN sensorTask */
-  /* Infinite loop */
-  MPU_Raw_t   raw;  // MPU6050 原始数据
+  MPU_Raw_t   raw;        // MPU6050 原始数据
   uint8_t     id;
+  uint32_t    dead_cnt = 0;   // 连续判死计数（读失败/全零）
 
   /* --- I2C & MPU6050 初始化 --- */
   SOFT_I2C_Init();                          // 初始化 I2C 引脚
+  MPU6050_Init();                           // 上电初始化一次；失败不挂起，循环里判死重试
 
-  id = MPU6050_ReadID();               // 读取芯片 ID 验证通信
-  if (id == MPU6050_ADDR)              // 检查 ID 是否正确 (0x68)
+  for(;;)
   {
-      MPU6050_Init();                  // 配置量程、采样率等
+      osDelay(20);  // 20ms 周期采集 (50Hz)
 
-      for(;;)
+      /* 读成功且非全零 → 数据有效入队；否则累计判死计数 */
+      if (MPU6050_ReadAll(&raw) == 0 && !sensor_all_zero(&raw))
       {
-          osDelay(20);  // 20ms 周期采集 (50Hz)
-          if(MPU6050_ReadAll(&raw) == 0)
-          {
-            osMessageQueuePut(imuQueueHandle, &raw, 0, 0);
-          }   
+          dead_cnt = 0;
+          osMessageQueuePut(imuQueueHandle, &raw, 0, 0);
       }
-  }
-  else
-  {
-      printf("MPU6050 ERROR: Wrong ID! (read 0x%02X)\n", id);
-      for(;;)
+      else if (++dead_cnt >= 5)   // 连续 100ms 判死 → 重新初始化
       {
-          osDelay(1000);  // 出错后挂起，不采样
+          dead_cnt = 0;
+          id = MPU6050_ReadID();
+          if (id == MPU6050_ADDR)          // 芯片已响应才重新配置
+          {
+              MPU6050_Init();
+              printf("MPU6050 重新初始化\n");
+          }
+          /* ID 仍不对 → 传感器没接上/没上电，下一轮再试 */
       }
   }
   /* USER CODE END sensorTask */
@@ -419,6 +428,18 @@ void commTask(void *argument)
         }
     }
 
+    /* 状态帧定时器：每 10 个节拍（1 秒）发一次 STATUS_REPLY，
+     * 让云端 state 键持续刷新，无需手动查询 */
+    {
+        static int s_status_tick = 0;
+        if (++s_status_tick >= 10)
+        {
+            s_status_tick = 0;
+            tx_len = Comm_PackStatusReply(tx_buf, (uint8_t)FallDetect_GetState());
+            ESP32_Send(tx_buf, tx_len);
+        }
+    }
+
     /* 处理下行指令帧 */
     if (ESP32_RX_GetFrame(rx_buf, &rx_len))
     {
@@ -431,11 +452,6 @@ void commTask(void *argument)
                     printf("[CMD] SET_THRESHOLD id=%u val=%lu\n", cmd.param_id, cmd.value);
                     break;
 
-                case COMM_TYPE_ALARM_CANCEL:
-                    g_alarm = 1;
-                    printf("[CMD] ALARM_CANCEL\n");
-                    break;
-
                 case COMM_TYPE_TEST_LED:
                     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_6,
                                       cmd.value ? GPIO_PIN_RESET : GPIO_PIN_SET);
@@ -444,11 +460,6 @@ void commTask(void *argument)
                 case COMM_TYPE_TEST_BUZZER:
                     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_11,
                                       cmd.value ? GPIO_PIN_SET : GPIO_PIN_RESET);
-                    break;
-
-                case COMM_TYPE_CHECK_STATUS:
-                    tx_len = Comm_PackStatusReply(tx_buf, (uint8_t)FallDetect_GetState());
-                    ESP32_Send(tx_buf, tx_len);
                     break;
 
                 default:

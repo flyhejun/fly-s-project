@@ -200,11 +200,6 @@ int Comm_ParseCmd(const uint8_t *frame, uint16_t len, Comm_Cmd_t *cmd)
             cmd->value = frame[4];
             break;
 
-        case COMM_TYPE_ALARM_CANCEL:
-        case COMM_TYPE_CHECK_STATUS:
-            if (payload_len != 0) return 0;
-            break;
-
         default:
             return 0;
     }

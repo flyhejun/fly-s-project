@@ -27,10 +27,8 @@
 
 /* --- 下行帧类型 ---*/
 #define FRAME_TYPE_SET_THRESHOLD 0x81
-#define FRAME_TYPE_ALARM_CANCEL  0x83
 #define FRAME_TYPE_TEST_LED      0x84
 #define FRAME_TYPE_TEST_BUZZER   0x85
-#define FRAME_TYPE_QUERY_STATUS  0x87
 
 /* Payload 大小 */
 #define REAL_TIME_PAYLOAD_LEN   8    /* accel_sq(4)+gyro_sq(4) */

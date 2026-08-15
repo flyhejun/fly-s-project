@@ -17,10 +17,9 @@
   *
   * 消息类型（下行 上位机→STM32）：
   *   0x81 SET_THRESHOLD — 修改阈值（param_id + value，5B payload）
-  *   0x83 ALARM_CANCEL  — 取消报警（0B payload）
   *   0x84 TEST_LED      — 测试 LED（on/off，1B payload）
+ *   （ALARM_CANCEL/QUERY_STATUS 已移除：报警取消走板子按键，状态走周期自动上报）
   *   0x85 TEST_BUZZER   — 测试蜂鸣器（on/off，1B payload）
-  *   0x87 QUERY_STATUS  — 查询状态（0B payload）
   *
   * 说明：上行帧不携带时间，由树莓派接收时打本地时间戳。
   ******************************************************************************
@@ -53,10 +52,8 @@ typedef struct {
 
 /* ---- 下行指令类型 ---- */
 #define COMM_TYPE_SET_THRESHOLD 0x81
-#define COMM_TYPE_ALARM_CANCEL  0x83
 #define COMM_TYPE_TEST_LED      0x84
 #define COMM_TYPE_TEST_BUZZER   0x85
-#define COMM_TYPE_CHECK_STATUS  0x87
 
 /* ---- 阈值参数 ID（SET_THRESHOLD，仅阈值可改，gyro 不可下发） ---- */
 #define COMM_PARAM_FREEFALL_THRESHOLD  0x01
